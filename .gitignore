@@ -1,0 +1,51 @@
+# CMake、Qt 与本地构建产物
+/build*/
+/out/
+/.cache/
+/.qt/
+/vcpkg_installed/
+/.vcpkg-cache/
+/CMakeUserPresets.json
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/install_manifest.txt
+/compile_commands.json
+*_autogen/
+
+# Visual Studio、VS Code 与 JetBrains 本地配置
+/.vs/
+/.vscode/
+/.idea/
+/*.user
+*.user.*
+*.suo
+*.VC.db
+*.VC.opendb
+
+# 编译器、链接器与安装器中间文件
+*.obj
+*.o
+*.pch
+*.pdb
+*.ilk
+*.idb
+*.wixpdb
+
+# APCM 本地保险库、日志和临时文件
+*.db
+*.db-*
+*.meta
+*.log
+*.tmp
+/aqtinstall.log
+
+# 本地环境变量（允许提交示例文件）
+.env
+.env.*
+!.env.example
+
+# 操作系统生成文件
+.DS_Store
+Thumbs.db
+Desktop.ini

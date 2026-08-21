@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="APCM - AltasCI multi-Platform Certificate Manager"
+      Manufacturer="AltasCI"
+      Version="$(var.ProductVersion)"
+      Language="2052"
+      Scope="perMachine"
+      UpgradeCode="{89001B17-F2C8-4BE9-B555-81F93C98D03A}">
+
+    <MajorUpgrade DowngradeErrorMessage="已安装更高版本的 APCM。" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Icon Id="APCM.exe" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="APCM.exe" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="APCM" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="APCM">
+        <Component Id="ApplicationShortcut" Guid="{5B105A4F-AC90-40F9-B68B-8CF86A4F4C3A}">
+          <Shortcut
+              Id="ApplicationStartMenuShortcut"
+              Name="APCM 证书管理器"
+              Description="AltasCI multi-Platform Certificate Manager"
+              Target="[INSTALLFOLDER]bin\CertificateManager.exe"
+              WorkingDirectory="INSTALLFOLDER"
+              Icon="APCM.exe" />
+          <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+          <RegistryValue
+              Root="HKLM"
+              Key="Software\AltasCI\APCM"
+              Name="StartMenuShortcut"
+              Type="integer"
+              Value="1"
+              KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="ProductFeature" Title="APCM" Level="1">
+      <ComponentGroupRef Id="ProductFiles" />
+      <ComponentRef Id="ApplicationShortcut" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="ProductFiles">
+      <Files Include="$(var.SourceDir)\**" Directory="INSTALLFOLDER" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>
