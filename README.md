@@ -21,6 +21,7 @@ APCM（AltasCI multi-Platform Certificate Manager）是基于 Qt 6 / C++20 的�
 - 结构化、版本化证书模板与可查询的本地加密审计日志
 - 全中文 Qt Quick / QML 传统 Windows 管理控制台界面，英文使用 Consolas、中文使用黑体
 - 显式安全退出与窗口关闭锁定：关闭 SQLCipher 连接、清零内存数据库密钥并保持加密数据持久化
+- Windows 内核互斥锁与本地 IPC 双重单实例保护；重复启动只会还原并激活已有窗口
 
 ## 安全边界
 
@@ -61,7 +62,7 @@ APCM（AltasCI multi-Platform Certificate Manager）是基于 Qt 6 / C++20 的�
 
 脚本会自动读取 `CMakeLists.txt` 中的项目版本，执行 Release 构建、QML lint、核心测试、Qt 运行库部署和 WiX 5 打包，输出
 `build\package\APCM-<版本>-x64.msi`。安装包为 x64、per-machine 单文件 MSI，CAB 已内嵌；
-安装后会创建所有用户开始菜单快捷方式和“应用和功能”卸载项，并支持相同 UpgradeCode 下的
+安装向导允许选择安装目录，以及是否创建开始菜单和公共桌面快捷方式；安装后会创建“应用和功能”卸载项，并支持相同 UpgradeCode 下的
 后续大版本升级。MSVC、libsodium、SQLCipher 与 OpenSSL Crypto 运行时均采用应用本地部署，
 目标机器不需要另行运行 VC Redistributable。
 

@@ -5,6 +5,7 @@
 /.qt/
 /vcpkg_installed/
 /.vcpkg-cache/
+/.wix/
 /CMakeUserPresets.json
 /CMakeFiles/
 /CMakeCache.txt

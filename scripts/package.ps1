@@ -74,18 +74,27 @@ if (-not (Test-Path -LiteralPath $mainExecutable) -or -not (Test-Path -LiteralPa
     throw 'The staged package is missing the main executable or elevation helper.'
 }
 
+# A single MSI cannot chain Qt's vc_redist executable. Use Microsoft's supported
+# application-local layout, but discover the current toolset instead of assuming VC143.
 $redistRoot = Join-Path $visualStudio 'VC\Redist\MSVC'
-$redistVersion = Get-ChildItem -LiteralPath $redistRoot -Directory |
+$runtimeDirectory = Get-ChildItem -LiteralPath $redistRoot -Directory |
     Where-Object { $_.Name -match '^\d+(?:\.\d+)+$' } |
     Sort-Object { [version]$_.Name } -Descending |
+    ForEach-Object {
+        $architectureDirectory = Join-Path $_.FullName 'x64'
+        if (Test-Path -LiteralPath $architectureDirectory) {
+            Get-ChildItem -LiteralPath $architectureDirectory -Directory |
+                Where-Object { $_.Name -match '^Microsoft\.VC\d+\.CRT$' } |
+                Sort-Object Name -Descending
+        }
+    } |
     Select-Object -First 1
-if (-not $redistVersion) {
-    throw "MSVC runtime was not found below $redistRoot"
+if (-not $runtimeDirectory) {
+    throw "An x64 Microsoft.VC*.CRT redistribution directory was not found below $redistRoot"
 }
-$runtimeDirectory = Join-Path $redistVersion.FullName 'x64\Microsoft.VC143.CRT'
-$runtimeFiles = Get-ChildItem -LiteralPath $runtimeDirectory -Filter '*.dll' -File
+$runtimeFiles = Get-ChildItem -LiteralPath $runtimeDirectory.FullName -Filter '*.dll' -File
 if (-not $runtimeFiles) {
-    throw "MSVC runtime DLLs were not found below $runtimeDirectory"
+    throw "MSVC runtime DLLs were not found below $($runtimeDirectory.FullName)"
 }
 Copy-Item -LiteralPath $runtimeFiles.FullName -Destination $applicationDirectory -Force
 
@@ -102,17 +111,25 @@ Push-Location $repository
 try {
     dotnet tool restore
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    dotnet tool run wix -- extension add WixToolset.UI.wixext/5.0.2
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $msiPath = Join-Path $packageDirectory ("APCM-{0}-x64.msi" -f $Version)
     $wixPdbPath = [System.IO.Path]::ChangeExtension($msiPath, '.wixpdb')
     if (Test-Path -LiteralPath $wixPdbPath) {
         Remove-Item -LiteralPath $wixPdbPath -Force
     }
     dotnet tool run wix -- build 'installer\Product.wxs' -arch x64 `
+        -ext WixToolset.UI.wixext `
+        -culture zh-CN `
+        -ct 2 `
         -d "SourceDir=$resolvedStage" `
         -d "ProductVersion=$Version" `
         -d "IconPath=$(Join-Path $repository 'resources\apcm.ico')" `
+        -d "LicensePath=$(Join-Path $repository 'installer\License.rtf')" `
         -pdbtype none `
         -o $msiPath
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    dotnet tool run wix -- msi validate $msiPath
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Write-Output $msiPath
 }

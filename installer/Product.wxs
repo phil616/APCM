@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
       Name="APCM - AltasCI multi-Platform Certificate Manager"
       Manufacturer="AltasCI"
@@ -11,13 +12,16 @@
     <MajorUpgrade DowngradeErrorMessage="已安装更高版本的 APCM。" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <Property Id="ARPNOMODIFY" Value="1" />
-    <Property Id="ARPNOREPAIR" Value="1" />
     <Icon Id="APCM.exe" SourceFile="$(var.IconPath)" />
     <Property Id="ARPPRODUCTICON" Value="APCM.exe" />
+    <Property Id="ApplicationFolderName" Value="APCM" />
+    <Property Id="WixAppFolder" Value="WixPerMachineFolder" />
+    <WixVariable Id="override WixUISupportPerUser" Value="0" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicensePath)" />
+    <ui:WixUI Id="WixUI_Advanced" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="APCM" />
+      <Directory Id="APPLICATIONFOLDER" Name="APCM" />
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
@@ -27,12 +31,12 @@
               Id="ApplicationStartMenuShortcut"
               Name="APCM 证书管理器"
               Description="AltasCI multi-Platform Certificate Manager"
-              Target="[INSTALLFOLDER]bin\CertificateManager.exe"
-              WorkingDirectory="INSTALLFOLDER"
+              Target="[APPLICATIONFOLDER]bin\CertificateManager.exe"
+              WorkingDirectory="APPLICATIONFOLDER"
               Icon="APCM.exe" />
           <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
           <RegistryValue
-              Root="HKLM"
+              Root="HKCU"
               Key="Software\AltasCI\APCM"
               Name="StartMenuShortcut"
               Type="integer"
@@ -42,15 +46,55 @@
       </Directory>
     </StandardDirectory>
 
-    <Feature Id="ProductFeature" Title="APCM" Level="1">
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="{1A559229-1065-4DFA-9EF9-F3F3FB928AFD}">
+        <Shortcut
+            Id="ApplicationDesktopShortcut"
+            Name="APCM 证书管理器"
+            Description="AltasCI multi-Platform Certificate Manager"
+            Target="[APPLICATIONFOLDER]bin\CertificateManager.exe"
+            WorkingDirectory="APPLICATIONFOLDER"
+            Icon="APCM.exe" />
+        <RegistryValue
+            Root="HKCU"
+            Key="Software\AltasCI\APCM"
+            Name="DesktopShortcut"
+            Type="integer"
+            Value="1"
+            KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature
+        Id="ProductFeature"
+        Title="APCM 主程序"
+        Description="APCM 证书、私钥、信任存储和 PKI 管理组件。"
+        Level="1"
+        AllowAbsent="no"
+        AllowAdvertise="no">
       <ComponentGroupRef Id="ProductFiles" />
-      <ComponentRef Id="ApplicationShortcut" />
+      <Feature
+          Id="StartMenuShortcutFeature"
+          Title="开始菜单快捷方式"
+          Description="在所有用户的开始菜单中创建 APCM 快捷方式。"
+          Level="1"
+          AllowAdvertise="no">
+        <ComponentRef Id="ApplicationShortcut" />
+      </Feature>
+      <Feature
+          Id="DesktopShortcutFeature"
+          Title="桌面快捷方式"
+          Description="在公共桌面创建 APCM 快捷方式。"
+          Level="1"
+          AllowAdvertise="no">
+        <ComponentRef Id="DesktopShortcut" />
+      </Feature>
     </Feature>
   </Package>
 
   <Fragment>
     <ComponentGroup Id="ProductFiles">
-      <Files Include="$(var.SourceDir)\**" Directory="INSTALLFOLDER" />
+      <Files Include="$(var.SourceDir)\**" Directory="APPLICATIONFOLDER" />
     </ComponentGroup>
   </Fragment>
 </Wix>

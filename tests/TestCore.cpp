@@ -1,4 +1,5 @@
 #include "services/TemplateService.h"
+#include "app/SingleInstanceGuard.h"
 #include "persistence/SecureBuffer.h"
 #include "persistence/SqlCipherVault.h"
 #include "platform/windows/certificate_store/WindowsCertificateStore.h"
@@ -6,8 +7,10 @@
 
 #include <QtTest>
 #include <QFile>
+#include <QSignalSpy>
 #include <QScopeGuard>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <sodium.h>
 
 #ifndef NOMINMAX
@@ -61,6 +64,28 @@ private slots:
         QCOMPARE(second.data(), address);
         QVERIFY(first.isEmpty());
         QCOMPARE(second.copy(), QByteArray("top-secret"));
+    }
+
+    void secondApplicationInstanceActivatesPrimary()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString lockPath = directory.filePath(QStringLiteral("apcm-instance.lock"));
+        const QString serverName = QStringLiteral("AltasCI.APCM.Test.%1")
+            .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+
+        certmgr::app::SingleInstanceGuard primary(lockPath, serverName);
+        QString message;
+        QCOMPARE(static_cast<int>(primary.start(&message)),
+                 static_cast<int>(certmgr::app::SingleInstanceGuard::Role::Primary));
+        QVERIFY2(message.isEmpty(), qPrintable(message));
+        QSignalSpy activationSpy(&primary,
+            &certmgr::app::SingleInstanceGuard::activationRequested);
+
+        certmgr::app::SingleInstanceGuard secondary(lockPath, serverName);
+        QCOMPARE(static_cast<int>(secondary.start(&message)),
+                 static_cast<int>(certmgr::app::SingleInstanceGuard::Role::Secondary));
+        QTRY_COMPARE_WITH_TIMEOUT(activationSpy.count(), 1, 2000);
     }
 
     void currentUserStoreCanBeEnumerated()
