@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(CertificateManager VERSION 0.1.1 LANGUAGES C CXX)
+project(CertificateManager VERSION 0.1.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,11 +17,13 @@ add_library(certmgr_core STATIC
     src/domain/certificate/CertificateInfo.cpp
     src/domain/enrollment/EnrollmentRequest.cpp
     src/services/TemplateService.cpp
+    src/services/PkiConsoleClient.cpp
     src/connectors/ManualCAConnector.cpp
     src/app/SingleInstanceGuard.cpp
     src/persistence/SecureBuffer.cpp
     src/persistence/SqlCipherVault.cpp
     src/platform/windows/common/WinError.cpp
+    src/platform/windows/credentials/WindowsCredentialStore.cpp
     src/platform/windows/certificate_store/WindowsCertificateStore.cpp
     src/platform/windows/cng/WindowsCngKeyProvider.cpp
     src/platform/windows/cert_enroll/WindowsCertEnrollBackend.cpp
@@ -35,7 +37,7 @@ target_link_libraries(certmgr_core
     PRIVATE
         unofficial-sodium::sodium
         sqlcipher::sqlcipher
-        Crypt32 Ncrypt Bcrypt Ole32 OleAut32 Shell32
+        Crypt32 Ncrypt Bcrypt Ole32 OleAut32 Shell32 Advapi32
 )
 
 if(MSVC)

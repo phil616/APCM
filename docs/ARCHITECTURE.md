@@ -71,3 +71,9 @@ APCM 管理证书是 SQLCipher 中对 Windows 证书指纹的引用。所有经�
 ## PKI connections
 
 手动连接使用 `ManualCAConnector` 准备外部交接，但不会伪装成已经联系 CA，也不会把申请错误标记为已提交。通用 HTTP 连接会严格检查 HTTP 状态，并以 `application/pkcs10` 将 CSR 实际 POST 到配置地址。它不是完整的 EST、SCEP 或 ACME 协议实现。V1 不在连接配置中保存口令或 API 密钥。
+
+## PKI-Console integration
+
+`PkiConsoleClient` 是异步 Qt Network 服务，单独维护 Cloudflare OAuth 与 PKI-Console 应用会话。它从未授权响应的 `WWW-Authenticate` 开始发现 protected-resource、授权服务器与动态注册端点，在 `127.0.0.1` 随机端口启动一次性回调，使用系统默认浏览器和 PKCE S256 获取 opaque bearer token。access/refresh token 由 `WindowsCredentialStore` 写入 Windows Credential Manager；PKI-Console Cookie Jar、CSRF token 和本地密码只存在于当前进程。
+
+业务请求只发往固定 Console API origin，禁用自动重定向，并附加 Bearer、host-only Cookie 和按方法需要的 CSRF token。创建证书申请时使用可复用的 Idempotency-Key；本地 `enrollment_requests.remote_request_id` 记录远程申请关系。签发后客户端下载 PEM 链、选取叶证书，并复用既有 CertEnroll/CNG 公钥匹配与 UAC 安装管线，因此 PKI 集成不会改变私钥权威边界。

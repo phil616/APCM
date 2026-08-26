@@ -1,6 +1,8 @@
 #include "AppController.h"
 
 #include <QFile>
+#include <QDir>
+#include <QDesktopServices>
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QJsonDocument>
@@ -11,6 +13,7 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QTemporaryFile>
 #include <QUrl>
 #include <QUuid>
 #include <QClipboard>
@@ -91,6 +94,7 @@ QString auditActionLabel(const QString &action)
         {QStringLiteral("CREATE_CSR"), QStringLiteral("创建 CSR")},
         {QStringLiteral("EXPORT_CSR"), QStringLiteral("导出 CSR")},
         {QStringLiteral("SUBMIT_CSR"), QStringLiteral("提交 CSR")},
+        {QStringLiteral("SUBMIT_PRIVATE_PKI"), QStringLiteral("提交到私有 PKI")},
         {QStringLiteral("PREPARE_MANUAL_SUBMISSION"), QStringLiteral("准备手动提交")},
         {QStringLiteral("INSTALL_RESPONSE"), QStringLiteral("安装签发证书")},
         {QStringLiteral("INSTALL_PKCS12"), QStringLiteral("安装 P12/PFX")},
@@ -177,6 +181,14 @@ NetworkResult runNetworkRequest(const QUrl &url, const QByteArray &method, const
 AppController::AppController(QObject *parent)
     : QObject(parent), vault_(dataDirectory())
 {
+    connect(&pkiClient_, &services::PkiConsoleClient::requestCreated,
+            this, &AppController::recordPrivatePkiSubmission);
+    connect(&pkiClient_, &services::PkiConsoleClient::certificateDownloaded,
+            this, &AppController::installDownloadedPrivatePkiCertificate);
+    connect(&pkiClient_, &services::PkiConsoleClient::authorizationUrlReady,
+            this, [this](const QUrl &url) {
+                if (!QDesktopServices::openUrl(url)) pkiClient_.browserLaunchFailed();
+            });
 }
 
 QVariantList AppController::templates() const
@@ -334,6 +346,7 @@ void AppController::loadVaultData()
                 {QStringLiteral("provider"), request.providerName},
                 {QStringLiteral("validityDays"), request.requestedValidityDays},
                 {QStringLiteral("remoteCA"), request.remoteCA},
+                {QStringLiteral("remoteRequestId"), request.remoteRequestId},
                 {QStringLiteral("hasCsr"), !request.csrText.isEmpty()}});
         }
     }
@@ -768,9 +781,11 @@ bool AppController::installEnrollmentResponse(const QString &requestId, const QU
         return false;
     }
     const QByteArray contents = file.readAll();
-    auto certificate = certificateStore_.decodeCertificate(decodeCertificateFile(contents));
+    auto decodedBundle = certificateBundle(contents);
+    if (!decodedBundle) { setError(decodedBundle.error()); return false; }
+    const QByteArray certificateDer = decodedBundle->first();
+    auto certificate = certificateStore_.decodeCertificate(certificateDer);
     if (!certificate) { setError(certificate.error()); return false; }
-    const QByteArray certificateDer = decodeCertificateFile(contents);
     if (request->scope == domain::StoreScope::Machine) {
         if (auto installed = elevatedHelper_.installMachineEnrollmentResponse(
                 source.toLocalFile(), certificate->sha256Fingerprint, request->providerName,
@@ -937,6 +952,83 @@ bool AppController::submitEnrollmentRequest(const QString &requestId, const QStr
     setStatus(QStringLiteral("CSR 已提交到 %1。").arg(connection->name));
     loadVaultData(); emit dataChanged();
     return true;
+}
+
+void AppController::submitToPrivatePki(const QString &requestId, const QString &caId,
+                                       const QString &profileId)
+{
+    auto requests = vault_.enrollmentRequests();
+    if (!requests) { setError(requests.error()); return; }
+    const auto request = std::find_if(requests->cbegin(), requests->cend(),
+        [&](const auto &value) { return value.id == requestId; });
+    if (request == requests->cend() || request->csrText.isEmpty()) {
+        setError({domain::ErrorCategory::Validation, QStringLiteral("pki.request_missing"), 0,
+                  QStringLiteral("所选本地证书申请不存在或没有 CSR。"), {}});
+        return;
+    }
+    if (!request->remoteRequestId.isEmpty()) {
+        setError({domain::ErrorCategory::Validation, QStringLiteral("pki.request_submitted"), 0,
+                  QStringLiteral("该 CSR 已提交到私有 PKI，不能重复创建申请。"),
+                  QStringLiteral("远程申请 ID：%1").arg(request->remoteRequestId)});
+        return;
+    }
+    pkiClient_.createCertificateRequest(request->id, request->csrText,
+                                        request->requestedValidityDays, caId, profileId);
+}
+
+void AppController::recordPrivatePkiSubmission(const QString &localRequestId,
+                                               const QString &remoteRequestId,
+                                               const QString &authorityName)
+{
+    auto requests = vault_.enrollmentRequests();
+    if (!requests) { setError(requests.error()); return; }
+    auto request = std::find_if(requests->begin(), requests->end(),
+        [&](const auto &value) { return value.id == localRequestId; });
+    if (request == requests->end()) return;
+    request->remoteRequestId = remoteRequestId;
+    request->remoteCA = authorityName;
+    request->state = domain::EnrollmentState::Submitted;
+    request->updatedAt = QDateTime::currentDateTimeUtc();
+    if (auto saved = vault_.saveEnrollmentRequest(*request); !saved) {
+        setError(saved.error());
+        return;
+    }
+    static_cast<void>(vault_.append({QDateTime::currentDateTimeUtc(), QStringLiteral("SUBMIT_PRIVATE_PKI"),
+        remoteRequestId, authorityName, QStringLiteral("SUCCESS"), {}}));
+    setStatus(QStringLiteral("CSR 已提交到私有 PKI：%1。").arg(authorityName));
+    loadVaultData();
+    emit dataChanged();
+}
+
+void AppController::installPrivatePkiCertificate(const QString &remoteRequestId,
+                                                 const QString &certificateId)
+{
+    auto requests = vault_.enrollmentRequests();
+    if (!requests) { setError(requests.error()); return; }
+    const auto request = std::find_if(requests->cbegin(), requests->cend(),
+        [&](const auto &value) { return value.remoteRequestId == remoteRequestId; });
+    if (request == requests->cend()) {
+        setError({domain::ErrorCategory::Validation, QStringLiteral("pki.local_request_missing"), 0,
+                  QStringLiteral("未找到与该 PKI 记录关联的本地 CSR，无法安全关联私钥。"), {}});
+        return;
+    }
+    pkiClient_.downloadCertificate(request->id, certificateId);
+}
+
+void AppController::installDownloadedPrivatePkiCertificate(const QString &localRequestId,
+                                                           const QByteArray &pemData)
+{
+    QTemporaryFile temporary(QDir::tempPath() + QStringLiteral("/APCM-pki-response-XXXXXX.pem"));
+    temporary.setAutoRemove(true);
+    if (!temporary.open() || temporary.write(pemData) != pemData.size() || !temporary.flush()) {
+        setError({domain::ErrorCategory::General, QStringLiteral("pki.response_temp"), 0,
+                  QStringLiteral("无法准备私有 PKI 签发证书的安全临时文件。"), temporary.errorString()});
+        return;
+    }
+    temporary.close();
+    if (installEnrollmentResponse(localRequestId, QUrl::fromLocalFile(temporary.fileName()))) {
+        setStatus(QStringLiteral("私有 PKI 签发证书已安装，并与本地 CNG/TPM 私钥完成公钥核对。"));
+    }
 }
 
 } // namespace certmgr::app

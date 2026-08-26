@@ -7,6 +7,7 @@
 #include "../platform/windows/cng/WindowsCngKeyProvider.h"
 #include "../platform/windows/privilege/ElevatedHelperLauncher.h"
 #include "../services/TemplateService.h"
+#include "../services/PkiConsoleClient.h"
 #include "../connectors/ManualCAConnector.h"
 
 #include <QObject>
@@ -18,6 +19,7 @@ namespace certmgr::app {
 class AppController final : public QObject {
     Q_OBJECT
     Q_PROPERTY(CertificateListModel *certificates READ certificates CONSTANT)
+    Q_PROPERTY(certmgr::services::PkiConsoleClient *pki READ pki CONSTANT)
     Q_PROPERTY(bool vaultExists READ vaultExists NOTIFY vaultStateChanged)
     Q_PROPERTY(bool unlocked READ unlocked NOTIFY vaultStateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
@@ -37,6 +39,7 @@ class AppController final : public QObject {
 public:
     explicit AppController(QObject *parent = nullptr);
     CertificateListModel *certificates() { return &certificates_; }
+    services::PkiConsoleClient *pki() { return &pkiClient_; }
     bool vaultExists() const { return vault_.exists(); }
     bool unlocked() const { return vault_.isUnlocked(); }
     bool busy() const { return busy_; }
@@ -73,6 +76,10 @@ public:
     Q_INVOKABLE bool exportRequestCsr(const QString &requestId, const QUrl &destination);
     Q_INVOKABLE bool installEnrollmentResponse(const QString &requestId, const QUrl &source);
     Q_INVOKABLE bool submitEnrollmentRequest(const QString &requestId, const QString &connectionId);
+    Q_INVOKABLE void submitToPrivatePki(const QString &requestId, const QString &caId,
+                                        const QString &profileId);
+    Q_INVOKABLE void installPrivatePkiCertificate(const QString &remoteRequestId,
+                                                  const QString &certificateId);
     Q_INVOKABLE bool manageRoot(const QString &certificateId);
     Q_INVOKABLE bool unmanageRoot(const QString &fingerprint);
     Q_INVOKABLE QString savePkiConnection(const QString &id, const QString &name,
@@ -95,6 +102,11 @@ private:
     void setError(const domain::AppError &error);
     void setStatus(QString message);
     static QByteArray decodeCertificateFile(const QByteArray &contents);
+    void recordPrivatePkiSubmission(const QString &localRequestId,
+                                    const QString &remoteRequestId,
+                                    const QString &authorityName);
+    void installDownloadedPrivatePkiCertificate(const QString &localRequestId,
+                                                const QByteArray &pemData);
 
     CertificateListModel certificates_;
     platform::windows::WindowsCertificateStore certificateStore_;
@@ -102,6 +114,7 @@ private:
     platform::windows::WindowsCertEnrollBackend enrollmentBackend_;
     platform::windows::ElevatedHelperLauncher elevatedHelper_;
     services::TemplateService templateService_;
+    services::PkiConsoleClient pkiClient_;
     connectors::ManualCAConnector manualConnector_;
     persistence::SqlCipherVault vault_;
     bool busy_{false};

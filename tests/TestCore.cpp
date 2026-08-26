@@ -1,4 +1,5 @@
 #include "services/TemplateService.h"
+#include "services/PkiConsoleClient.h"
 #include "app/SingleInstanceGuard.h"
 #include "persistence/SecureBuffer.h"
 #include "persistence/SqlCipherVault.h"
@@ -54,6 +55,33 @@ private slots:
         const auto result = service.resolveAndValidate(value);
         QVERIFY(!result.has_value());
         QCOMPARE(result.error().code, QStringLiteral("template.tpm_exportable"));
+    }
+
+    void privatePkiOAuthDiscoveryWhenRequested()
+    {
+        if (qEnvironmentVariableIntValue("CERTMGR_TEST_PKI_OAUTH") != 1)
+            QSKIP("Set CERTMGR_TEST_PKI_OAUTH=1 to exercise live Managed OAuth discovery.");
+        certmgr::services::PkiConsoleClient client;
+        connect(&client, &certmgr::services::PkiConsoleClient::stateChanged, &client, [&client] {
+            qInfo().noquote() << "PKI OAuth phase:" << client.phase();
+        });
+        connect(&client, &certmgr::services::PkiConsoleClient::authorizationUrlReady,
+                &client, [](const QUrl &url) {
+            qInfo().noquote() << "PKI OAuth authorization URL ready for" << url.host();
+        });
+        QSignalSpy authorizationReady(
+            &client, &certmgr::services::PkiConsoleClient::authorizationUrlReady);
+        client.beginAuthorization();
+        QTRY_VERIFY_WITH_TIMEOUT(client.oauthAuthorized() || authorizationReady.count() == 1 ||
+                                 !client.errorMessage().isEmpty(), 15000);
+        QVERIFY2(client.errorMessage().isEmpty(), qPrintable(client.errorMessage()));
+        QVERIFY(client.oauthAuthorized() || authorizationReady.count() == 1);
+    }
+
+    void privatePkiClientConstructs()
+    {
+        certmgr::services::PkiConsoleClient client;
+        QVERIFY(!client.phase().isEmpty());
     }
 
     void secureBufferMovesWithoutCopying()

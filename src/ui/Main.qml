@@ -28,6 +28,14 @@ ApplicationWindow {
     property bool packageIsPkcs12: false
     property int installDefaultRole: 0
 
+    function localRequestForRemote(remoteRequestId) {
+        for (var i = 0; i < App.enrollmentRequests.length; ++i) {
+            if (App.enrollmentRequests[i].remoteRequestId === remoteRequestId)
+                return App.enrollmentRequests[i]
+        }
+        return null
+    }
+
     function chooseCertificatePackage(defaultRole) {
         installDefaultRole = defaultRole
         certificatePackageFileDialog.open()
@@ -177,7 +185,8 @@ ApplicationWindow {
                             {label: "总览", mark: "⌂"}, {label: "证书", mark: "▣"},
                             {label: "证书申请", mark: "↗"}, {label: "申请模板", mark: "▤"},
                             {label: "APCM 根证书", mark: "◆"}, {label: "加密密钥", mark: "⚿"},
-                            {label: "PKI 连接", mark: "⇄"}, {label: "审计日志", mark: "≡"}
+                            {label: "PKI 连接", mark: "⇄"}, {label: "审计日志", mark: "≡"},
+                            {label: "AltasCI PKI", mark: "◈"}
                         ]
                         NavButton {
                             Layout.fillWidth: true
@@ -722,6 +731,247 @@ ApplicationWindow {
                         }
                     }
                 }
+
+                // Authenticated private PKI console.
+                Item {
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 14
+                        spacing: 10
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            SectionHeading {
+                                Layout.fillWidth: true
+                                title: "私有 PKI"
+                                subtitle: "通过 Cloudflare Access 与 PKI-Console 双层认证申请和查看证书"
+                            }
+                            Rectangle {
+                                Layout.preferredWidth: privatePkiState.implicitWidth + 20
+                                Layout.preferredHeight: 26
+                                color: App.pki.authenticated ? Theme.mintWash : Theme.amberWash
+                                border.width: 1
+                                border.color: App.pki.authenticated ? Theme.mint : Theme.amber
+                                radius: 1
+                                Text {
+                                    id: privatePkiState
+                                    anchors.centerIn: parent
+                                    text: App.pki.authenticated ? "已建立双层会话" : App.pki.phase
+                                    color: App.pki.authenticated ? Theme.mint : Theme.amber
+                                    font.family: Theme.uiFont
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            visible: !App.pki.oauthAuthorized
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            color: Theme.panel
+                            border.width: 1
+                            border.color: Theme.line
+                            ColumnLayout {
+                                anchors.centerIn: parent
+                                width: Math.min(650, parent.width - 48)
+                                spacing: 14
+                                Text { text: "01  授权设备访问 PKI"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 18; font.bold: true }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "APCM 将发现 Cloudflare Managed OAuth 配置，并在系统默认浏览器中使用 Authorization Code + PKCE 授权。程序不会读取浏览器 Cookie，也不会收集您的 IdP 密码。"
+                                    color: Theme.textMuted
+                                    wrapMode: Text.WordWrap
+                                    font.family: Theme.uiFont
+                                    font.pixelSize: 11
+                                    lineHeight: 1.35
+                                }
+                                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    ColumnLayout { Layout.fillWidth: true; spacing: 2
+                                        Text { text: "服务入口"; color: Theme.textDim; font.family: Theme.uiFont; font.pixelSize: 9 }
+                                        Text { text: App.pki.serviceOrigin; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 11 }
+                                    }
+                                    CommandButton {
+                                        text: App.pki.busy ? "等待浏览器授权…" : "在浏览器中授权"
+                                        primary: true
+                                        enabled: !App.pki.busy
+                                        onClicked: App.pki.beginAuthorization()
+                                    }
+                                }
+                                Text {
+                                    visible: App.pki.errorMessage.length > 0
+                                    Layout.fillWidth: true
+                                    text: App.pki.errorMessage
+                                    color: Theme.red
+                                    wrapMode: Text.WordWrap
+                                    font.family: Theme.uiFont
+                                    font.pixelSize: 10
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            visible: App.pki.oauthAuthorized && !App.pki.authenticated
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            color: Theme.panel
+                            border.width: 1
+                            border.color: Theme.line
+                            RowLayout {
+                                anchors.centerIn: parent
+                                width: Math.min(720, parent.width - 48)
+                                spacing: 28
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 9
+                                    Text { text: "02  登录 PKI-Console"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 18; font.bold: true }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: "Cloudflare 已确认此设备上的入口身份。现在使用 PKI-Console 本地账户建立应用会话；本地角色决定您可见的 CA、申请和证书。"
+                                        color: Theme.textMuted
+                                        wrapMode: Text.WordWrap
+                                        font.family: Theme.uiFont
+                                        font.pixelSize: 10
+                                        lineHeight: 1.35
+                                    }
+                                    Text { text: "Access 授权令牌已安全保存到 Windows 凭据管理器。"; color: Theme.mint; font.family: Theme.uiFont; font.pixelSize: 9 }
+                                }
+                                Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 220; color: Theme.line }
+                                ColumnLayout {
+                                    Layout.preferredWidth: 300
+                                    spacing: 6
+                                    Text { text: "用户名或邮箱"; color: Theme.textMuted; font.family: Theme.uiFont; font.pixelSize: 10 }
+                                    EditBox { id: privatePkiLogin; Layout.fillWidth: true; placeholderText: "PKI-Console 本地账户" }
+                                    Text { text: "密码"; color: Theme.textMuted; font.family: Theme.uiFont; font.pixelSize: 10 }
+                                    EditBox { id: privatePkiPassword; Layout.fillWidth: true; echoMode: TextInput.Password; passwordCharacter: "●" }
+                                    Text { text: "TOTP（仅超级管理员）"; color: Theme.textMuted; font.family: Theme.uiFont; font.pixelSize: 10 }
+                                    EditBox { id: privatePkiTotp; Layout.fillWidth: true; placeholderText: "普通账户留空"; maximumLength: 6; inputMethodHints: Qt.ImhDigitsOnly }
+                                    Text { visible: App.pki.errorMessage.length > 0; Layout.fillWidth: true; text: App.pki.errorMessage; color: Theme.red; wrapMode: Text.WordWrap; font.family: Theme.uiFont; font.pixelSize: 9 }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        CommandButton { text: "重新授权"; enabled: !App.pki.busy; onClicked: App.pki.logout(true) }
+                                        Item { Layout.fillWidth: true }
+                                        CommandButton {
+                                            text: App.pki.busy ? "正在登录…" : "登录"
+                                            primary: true
+                                            enabled: !App.pki.busy && privatePkiLogin.text.length > 0 && privatePkiPassword.text.length > 0
+                                            onClicked: {
+                                                var secret = privatePkiPassword.text
+                                                App.pki.login(privatePkiLogin.text, secret, privatePkiTotp.text)
+                                                privatePkiPassword.clear()
+                                                privatePkiTotp.clear()
+                                                secret = ""
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        ColumnLayout {
+                            visible: App.pki.authenticated
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            spacing: 8
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 46
+                                color: Theme.panelRaised
+                                border.width: 1
+                                border.color: Theme.line
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 10
+                                    anchors.rightMargin: 10
+                                    spacing: 8
+                                    Rectangle { Layout.preferredWidth: 8; Layout.preferredHeight: 8; radius: 4; color: Theme.mint }
+                                    ColumnLayout { spacing: 0
+                                        Text { text: App.pki.userName; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 10; font.bold: true }
+                                        Text { text: App.pki.userRole + " · 会话至 " + App.pki.sessionExpiresAt; color: Theme.textDim; font.family: Theme.uiFont; font.pixelSize: 8 }
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    CommandButton { text: "提交本地 CSR…"; primary: true; enabled: !App.pki.busy; onClicked: privatePkiSubmitDialog.open() }
+                                    CommandButton { text: App.pki.busy ? "正在同步…" : "同步"; enabled: !App.pki.busy; onClicked: App.pki.refreshRemoteData(privatePkiFilter.currentValue || "") }
+                                    CommandButton { text: "退出会话"; enabled: !App.pki.busy; onClicked: App.pki.logout(false) }
+                                    CommandButton { text: "从此设备退出"; enabled: !App.pki.busy; onClicked: App.pki.logout(true) }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text { text: "PKI 证书清单"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 11; font.bold: true }
+                                Text { text: App.pki.inventory.length + " 条"; color: Theme.textDim; font.family: Theme.uiFont; font.pixelSize: 9 }
+                                Item { Layout.fillWidth: true }
+                                ComboBox {
+                                    id: privatePkiFilter
+                                    Layout.preferredWidth: 138
+                                    model: [{text: "全部状态", value: ""}, {text: "处理中", value: "pending"}, {text: "已签发", value: "issued"}, {text: "已拒绝", value: "rejected"}, {text: "失败", value: "failed"}]
+                                    textRole: "text"
+                                    valueRole: "value"
+                                    font.family: Theme.uiFont
+                                    font.pixelSize: 10
+                                    onActivated: App.pki.refreshRemoteData(currentValue)
+                                }
+                            }
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                color: Theme.panel
+                                border.width: 1
+                                border.color: Theme.line
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    spacing: 0
+                                    TableTitle { Layout.fillWidth: true; RowLayout { anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 10
+                                        Text { Layout.fillWidth: true; text: "主题 / SAN"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 10; font.bold: true }
+                                        Text { Layout.preferredWidth: 160; text: "颁发机构"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 10; font.bold: true }
+                                        Text { Layout.preferredWidth: 100; text: "申请人"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 10; font.bold: true }
+                                        Text { Layout.preferredWidth: 90; text: "状态"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 10; font.bold: true }
+                                        Text { Layout.preferredWidth: 104; text: "签发 / 到期"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 10; font.bold: true }
+                                        Text { Layout.preferredWidth: 112; text: "本地操作"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 10; font.bold: true }
+                                    } }
+                                    ListView {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        model: App.pki.inventory
+                                        clip: true
+                                        delegate: Rectangle {
+                                            required property var modelData
+                                            property var localRequest: window.localRequestForRemote(modelData.request_id || "")
+                                            width: ListView.view.width
+                                            height: 54
+                                            color: "transparent"
+                                            border.width: 1
+                                            border.color: Theme.line
+                                            RowLayout { anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 10
+                                                ColumnLayout { Layout.fillWidth: true; spacing: 0
+                                                    Text { Layout.fillWidth: true; text: modelData.subject ? modelData.subject.common_name : "—"; color: Theme.text; elide: Text.ElideRight; font.family: Theme.uiFont; font.pixelSize: 10 }
+                                                    Text { Layout.fillWidth: true; text: modelData.sans && modelData.sans.length ? modelData.sans.join(", ") : (modelData.serial ? "序列号 " + modelData.serial : "等待签发"); color: Theme.textDim; elide: Text.ElideRight; font.family: Theme.uiFont; font.pixelSize: 8 }
+                                                }
+                                                Text { Layout.preferredWidth: 160; text: modelData.issuer_name || modelData.issuer_slug || "—"; color: Theme.textMuted; elide: Text.ElideRight; font.family: Theme.uiFont; font.pixelSize: 9 }
+                                                Text { Layout.preferredWidth: 100; text: modelData.requester_username || "—"; color: Theme.textMuted; elide: Text.ElideRight; font.family: Theme.uiFont; font.pixelSize: 9 }
+                                                Text { Layout.preferredWidth: 90; text: modelData.workflow_status || modelData.request_status || "—"; color: modelData.workflow_status === "issued" ? Theme.mint : (modelData.workflow_status === "failed" || modelData.workflow_status === "rejected" ? Theme.red : Theme.amber); font.family: Theme.uiFont; font.pixelSize: 9; font.bold: true }
+                                                ColumnLayout { Layout.preferredWidth: 104; spacing: 0
+                                                    Text { text: modelData.issued_at ? modelData.issued_at.substring(0, 10) : "—"; color: Theme.textMuted; font.family: Theme.uiFont; font.pixelSize: 8 }
+                                                    Text { text: modelData.not_after ? modelData.not_after.substring(0, 10) : "—"; color: Theme.textDim; font.family: Theme.uiFont; font.pixelSize: 8 }
+                                                }
+                                                CommandButton {
+                                                    Layout.preferredWidth: 112
+                                                    text: modelData.workflow_status !== "issued" ? "等待签发" : (localRequest ? "安装并关联" : "仅可查看")
+                                                    enabled: modelData.workflow_status === "issued" && !!localRequest && !!modelData.certificate_id && !App.pki.busy
+                                                    onClicked: App.installPrivatePkiCertificate(modelData.request_id, modelData.certificate_id)
+                                                }
+                                            }
+                                        }
+                                        footer: Text { visible: App.pki.inventory.length === 0; width: parent ? parent.width : 0; topPadding: 28; text: App.pki.busy ? "正在从私有 PKI 同步…" : "当前账户没有可见的 PKI 证书申请。"; color: Theme.textDim; horizontalAlignment: Text.AlignHCenter; font.family: Theme.uiFont; font.pixelSize: 10 }
+                                    }
+                                }
+                            }
+                            Text { visible: App.pki.errorMessage.length > 0; Layout.fillWidth: true; text: App.pki.errorMessage; color: Theme.red; wrapMode: Text.WordWrap; font.family: Theme.uiFont; font.pixelSize: 9 }
+                        }
+                    }
+                }
             }
         }
 
@@ -802,6 +1052,115 @@ ApplicationWindow {
                     CommandButton { Layout.fillWidth: true; text: "删除证书…"; onClicked: deleteConfirm.open() }
                 }
             }
+        }
+    }
+
+    Dialog {
+        id: privatePkiSubmitDialog
+        anchors.centerIn: parent
+        width: 590
+        height: 390
+        modal: true
+        title: "向私有 PKI 提交本地 CSR"
+        onOpened: {
+            privatePkiRequest.currentIndex = privatePkiRequest.count > 0 ? 0 : -1
+            privatePkiCa.currentIndex = privatePkiCa.count > 0 ? 0 : -1
+            if (privatePkiCa.currentIndex >= 0)
+                App.pki.loadProfiles(privatePkiCa.currentValue)
+        }
+        background: Rectangle { color: Theme.panel; border.width: 1; border.color: Theme.lineBright; radius: 2 }
+        header: Rectangle {
+            height: 42
+            color: "#F0F0F0"
+            border.width: 1
+            border.color: Theme.line
+            Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: privatePkiSubmitDialog.title; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 12; font.bold: true }
+        }
+        footer: Rectangle {
+            implicitHeight: 48
+            color: "#F7F7F7"
+            border.width: 1
+            border.color: Theme.line
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                anchors.topMargin: 9
+                anchors.bottomMargin: 9
+                spacing: 8
+
+                Item { Layout.fillWidth: true }
+
+                CommandButton {
+                    Layout.preferredWidth: 82
+                    Layout.alignment: Qt.AlignVCenter
+                    text: "取消"
+                    onClicked: privatePkiSubmitDialog.close()
+                }
+
+                CommandButton {
+                    Layout.preferredWidth: 96
+                    Layout.alignment: Qt.AlignVCenter
+                    text: "提交申请"
+                    primary: true
+                    enabled: !App.pki.busy && privatePkiRequest.currentIndex >= 0 && privatePkiCa.currentIndex >= 0
+                    onClicked: {
+                        var request = privatePkiRequest.model[privatePkiRequest.currentIndex]
+                        App.submitToPrivatePki(request.id, privatePkiCa.currentValue,
+                            privatePkiProfile.currentIndex >= 0 ? privatePkiProfile.currentValue : "")
+                        privatePkiSubmitDialog.close()
+                    }
+                }
+            }
+        }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Text { text: "本地证书申请"; color: Theme.textMuted; font.family: Theme.uiFont; font.pixelSize: 10 }
+            ComboBox {
+                id: privatePkiRequest
+                Layout.fillWidth: true
+                model: App.enrollmentRequests.filter(function(item) { return item.hasCsr && !item.remoteRequestId }).map(function(item) {
+                    return {id: item.id, label: (item.name || item.subject) + "  ·  " + item.validityDays + " 天", validityDays: item.validityDays}
+                })
+                textRole: "label"
+                valueRole: "id"
+                font.family: Theme.uiFont
+                font.pixelSize: 10
+            }
+            Text { text: "证书颁发机构"; color: Theme.textMuted; font.family: Theme.uiFont; font.pixelSize: 10 }
+            ComboBox {
+                id: privatePkiCa
+                Layout.fillWidth: true
+                model: App.pki.authorities
+                textRole: "name"
+                valueRole: "id"
+                font.family: Theme.uiFont
+                font.pixelSize: 10
+                onActivated: App.pki.loadProfiles(currentValue)
+            }
+            Text { text: "签名配置档"; color: Theme.textMuted; font.family: Theme.uiFont; font.pixelSize: 10 }
+            ComboBox {
+                id: privatePkiProfile
+                Layout.fillWidth: true
+                model: App.pki.profiles
+                textRole: "name"
+                valueRole: "id"
+                font.family: Theme.uiFont
+                font.pixelSize: 10
+            }
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
+            Text {
+                Layout.fillWidth: true
+                text: "APCM 只提交公开的 PKCS#10 CSR 和期望有效期。对应私钥继续保留在 Windows CNG、TPM、智能卡或 HSM 中；签发证书安装前会再次核对公钥。"
+                color: Theme.mint
+                wrapMode: Text.WordWrap
+                font.family: Theme.uiFont
+                font.pixelSize: 9
+                lineHeight: 1.25
+            }
+            Text { visible: privatePkiRequest.count === 0; Layout.fillWidth: true; text: "没有可提交的本地 CSR。请先在“证书申请”中生成申请。"; color: Theme.amber; wrapMode: Text.WordWrap; font.family: Theme.uiFont; font.pixelSize: 9 }
+            Item { Layout.fillHeight: true }
         }
     }
 

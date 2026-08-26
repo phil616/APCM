@@ -18,6 +18,7 @@ APCM（AltasCI multi-Platform Certificate Manager）是基于 Qt 6 / C++20 的�
 - 可选择当前用户或本地计算机的个人、根 CA、中间 CA、企业信任存储；通过 APCM 安装的证书自动加入加密管理清单
 - 实时显示可枚举的 CNG/KSP 密钥，并区分 TPM、硬件与软件密钥
 - 可配置手动工作流和通用 HTTP PKCS#10 连接，支持严格的 HTTP 状态检查及实际 CSR POST
+- 集成 PKI-Console 私有 PKI：通过系统浏览器完成 Cloudflare Managed OAuth + PKCE，再以本地账户建立 Cookie/CSRF 会话；可选择 CA/签名配置档、提交本地 CSR、查看角色过滤后的证书清单并安装签发证书
 - 结构化、版本化证书模板与可查询的本地加密审计日志
 - 全中文 Qt Quick / QML 传统 Windows 管理控制台界面，英文使用 Consolas、中文使用黑体
 - 显式安全退出与窗口关闭锁定：关闭 SQLCipher 连接、清零内存数据库密钥并保持加密数据持久化
@@ -33,6 +34,8 @@ APCM（AltasCI multi-Platform Certificate Manager）是基于 Qt 6 / C++20 的�
 - 删除证书不会删除关联私钥。
 - P12/PFX 密码仅用于当前安装，不写入 SQLCipher、日志或命令行；机器级导入通过 DPAPI 临时封装后交给 UAC Helper。
 - 客户端模板只减少错误，服务端 CA / Enrollment Gateway 必须执行最终策略。
+- Cloudflare access/refresh token 只存入 Windows Credential Manager；PKI 本地密码、TOTP、应用 Cookie 和 CSRF token 不写入配置文件、SQLCipher 或日志。
+- 私有 PKI 只接收公开 CSR，不接收本地私钥；下载证书仍须通过原有 CNG 公钥匹配后才能与申请私钥关联。
 
 ## 构建
 

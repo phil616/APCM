@@ -17,6 +17,9 @@
 13. Every certificate installed through APCM is registered by SHA-256 fingerprint in the encrypted management list.
 14. P12/PFX passwords are never persisted or audited; machine-import passwords cross elevation only as temporary DPAPI-protected data.
 15. Root-store installation always requires explicit confirmation and rejects any non-CA certificate in the package.
+16. Cloudflare OAuth tokens are stored only in Windows Credential Manager; PKI passwords, TOTP values, cookies, and CSRF tokens are never persisted or audited.
+17. OAuth uses discovered HTTPS endpoints, a one-shot 127.0.0.1 loopback callback, fresh PKCE S256/state values, and the system browser; API redirects are not followed automatically.
+18. Private-PKI submission uploads only the public PKCS#10 CSR. Downloaded certificates must pass the existing CNG public-key comparison before installation.
 
 ## Explicit non-goals
 
