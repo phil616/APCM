@@ -143,6 +143,19 @@ jobs:
           "$hash  $fileName" | Set-Content -LiteralPath "$msi.sha256" -Encoding ascii
           "已生成 ``$fileName``，SHA-256：``$hash``。" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
 
+      - name: 输出失败测试诊断
+        if: failure() && steps.release_check.outputs.should_release == 'true'
+        shell: pwsh
+        run: |
+          $paths = @('build/release/signing-tests.xml', 'build/release/Testing/Temporary/LastTest.log')
+          foreach ($path in $paths) {
+            if (Test-Path -LiteralPath $path) {
+              Write-Output "::group::$path"
+              Get-Content -LiteralPath $path
+              Write-Output '::endgroup::'
+            }
+          }
+
       - name: 保存依赖缓存
         if: always() && steps.release_check.outputs.should_release == 'true' && steps.dependency_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

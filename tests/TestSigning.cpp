@@ -145,6 +145,8 @@ class TestSigning final : public QObject {
 private slots:
     void initTestCase() {
         QVERIFY(QSslSocket::supportsSsl());
+        qInfo().noquote() << "TLS backend:" << QSslSocket::activeBackend()
+                          << "runtime:" << QSslSocket::sslLibraryVersionString();
         rootKey = makeKey(); leafKey = makeKey(); clientKey = makeKey();
         QVERIFY(rootKey && leafKey && clientKey);
         root = makeCert(rootKey.get(), nullptr, nullptr, true);
