@@ -1,5 +1,5 @@
 #include "services/TemplateService.h"
-#include "services/PkiConsoleClient.h"
+#include "domain/signing/SigningProtocol.h"
 #include "app/SingleInstanceGuard.h"
 #include "persistence/SecureBuffer.h"
 #include "persistence/SqlCipherVault.h"
@@ -55,33 +55,6 @@ private slots:
         const auto result = service.resolveAndValidate(value);
         QVERIFY(!result.has_value());
         QCOMPARE(result.error().code, QStringLiteral("template.tpm_exportable"));
-    }
-
-    void privatePkiOAuthDiscoveryWhenRequested()
-    {
-        if (qEnvironmentVariableIntValue("CERTMGR_TEST_PKI_OAUTH") != 1)
-            QSKIP("Set CERTMGR_TEST_PKI_OAUTH=1 to exercise live Managed OAuth discovery.");
-        certmgr::services::PkiConsoleClient client;
-        connect(&client, &certmgr::services::PkiConsoleClient::stateChanged, &client, [&client] {
-            qInfo().noquote() << "PKI OAuth phase:" << client.phase();
-        });
-        connect(&client, &certmgr::services::PkiConsoleClient::authorizationUrlReady,
-                &client, [](const QUrl &url) {
-            qInfo().noquote() << "PKI OAuth authorization URL ready for" << url.host();
-        });
-        QSignalSpy authorizationReady(
-            &client, &certmgr::services::PkiConsoleClient::authorizationUrlReady);
-        client.beginAuthorization();
-        QTRY_VERIFY_WITH_TIMEOUT(client.oauthAuthorized() || authorizationReady.count() == 1 ||
-                                 !client.errorMessage().isEmpty(), 15000);
-        QVERIFY2(client.errorMessage().isEmpty(), qPrintable(client.errorMessage()));
-        QVERIFY(client.oauthAuthorized() || authorizationReady.count() == 1);
-    }
-
-    void privatePkiClientConstructs()
-    {
-        certmgr::services::PkiConsoleClient client;
-        QVERIFY(!client.phase().isEmpty());
     }
 
     void secureBufferMovesWithoutCopying()
@@ -226,6 +199,34 @@ private slots:
         QCOMPARE(found->keyContainer, generated->keyContainerName);
     }
 
+    void independentSanOnlyEcdsaEnrollmentWhenRequested()
+    {
+        if (qEnvironmentVariableIntValue("CERTMGR_TEST_ENROLLMENT") != 1)
+            QSKIP("Set CERTMGR_TEST_ENROLLMENT=1 for real Windows CNG ECDSA CSR generation.");
+        certmgr::domain::CertificateTemplate value;
+        value.id = QStringLiteral("independent-signing-test");
+        value.scope = certmgr::domain::StoreScope::User;
+        value.key.provider = QStringLiteral("Microsoft Software Key Storage Provider");
+        value.key.algorithm = QStringLiteral("ECDSA_P256");
+        value.key.bits = 256;
+        value.subject.insert(QStringLiteral("CN"), {certmgr::domain::FieldSource::Fixed, QStringLiteral("localhost"), {}, false});
+        value.dnsSans = {QStringLiteral("localhost")};
+        certmgr::platform::windows::WindowsCertEnrollBackend backend;
+        const auto generated = backend.createPkcs10(value);
+        QVERIFY2(generated, generated ? "" : qPrintable(generated.error().message));
+        const auto cleanup = qScopeGuard([&] {
+            NCRYPT_PROV_HANDLE provider = 0; NCRYPT_KEY_HANDLE key = 0;
+            if (NCryptOpenStorageProvider(&provider, MS_KEY_STORAGE_PROVIDER, 0) == ERROR_SUCCESS) {
+                if (NCryptOpenKey(provider, &key, reinterpret_cast<LPCWSTR>(generated->keyContainerName.utf16()), 0, 0) == ERROR_SUCCESS)
+                    NCryptDeleteKey(key, 0);
+                NCryptFreeObject(provider);
+            }
+        });
+        const auto checked = certmgr::domain::signing::inspectCsr(generated->csrBase64.toUtf8());
+        QVERIFY2(checked, checked ? "" : qPrintable(checked.error().message));
+        QCOMPARE(checked->value(QStringLiteral("algorithm")).toString(), QStringLiteral("ECDSA-P256"));
+    }
+
     void pkcs12InspectionWhenFixtureProvided()
     {
         const QString fixturePath = qEnvironmentVariable("CERTMGR_TEST_P12");
@@ -269,8 +270,6 @@ private slots:
                                       QStringLiteral("受信任的根 CA"), QStringLiteral("测试根 CA")}).has_value());
         QVERIFY(vault.saveManagedCertificate({QStringLiteral("CERT123"), QStringLiteral("当前用户"),
                                       QStringLiteral("个人"), QStringLiteral("测试客户端证书")}).has_value());
-        QVERIFY(vault.saveConnection({QStringLiteral("connection-1"), QStringLiteral("manual"),
-                                      QStringLiteral("手动 CA"), {}, true}).has_value());
         vault.lock();
         QVERIFY(!vault.unlock(QByteArray("wrong password value")).has_value());
         QVERIFY(vault.unlock(QByteArray("correct horse battery staple")).has_value());
@@ -286,9 +285,6 @@ private slots:
         const auto managedCertificates = vault.managedCertificates();
         QVERIFY(managedCertificates.has_value());
         QCOMPARE(managedCertificates->size(), size_t{2});
-        const auto connections = vault.connections();
-        QVERIFY(connections.has_value());
-        QCOMPARE(connections->size(), size_t{1});
         const auto auditEvents = vault.auditEvents();
         QVERIFY(auditEvents.has_value());
         QCOMPARE(auditEvents->size(), size_t{1});

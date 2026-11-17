@@ -2,18 +2,12 @@
 
 #include <QFile>
 #include <QDir>
-#include <QDesktopServices>
+#include <QTemporaryFile>
 #include <QCoreApplication>
-#include <QEventLoop>
-#include <QJsonDocument>
 #include <QHash>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QNetworkRequest>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
-#include <QTimer>
-#include <QTemporaryFile>
 #include <QUrl>
 #include <QUuid>
 #include <QClipboard>
@@ -90,6 +84,7 @@ QString enrollmentStateLabel(const domain::EnrollmentState state)
 
 QString auditActionLabel(const QString &action)
 {
+    // Include legacy actions so existing vault audit records remain readable.
     static const QHash<QString, QString> labels{
         {QStringLiteral("CREATE_CSR"), QStringLiteral("创建 CSR")},
         {QStringLiteral("EXPORT_CSR"), QStringLiteral("导出 CSR")},
@@ -142,53 +137,21 @@ QStringList splitNames(const QVariant &value)
                                   Qt::SkipEmptyParts);
 }
 
-struct NetworkResult {
-    int status{0};
-    QByteArray body;
-    QString location;
-    QString error;
-    bool timedOut{false};
-};
-
-NetworkResult runNetworkRequest(const QUrl &url, const QByteArray &method, const QByteArray &body = {})
-{
-    QNetworkAccessManager manager;
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("APCM/0.1"));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/pkcs10"));
-    QNetworkReply *reply = method == QByteArrayLiteral("POST")
-        ? manager.post(request, body) : manager.get(request);
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    QObject::connect(&timer, &QTimer::timeout, &loop, [&] { reply->abort(); loop.quit(); });
-    timer.start(5000);
-    loop.exec();
-    NetworkResult result;
-    result.timedOut = !timer.isActive();
-    timer.stop();
-    result.status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    result.body = reply->readAll();
-    result.location = reply->header(QNetworkRequest::LocationHeader).toString();
-    result.error = result.timedOut ? QStringLiteral("连接超时。") : reply->errorString();
-    reply->deleteLater();
-    return result;
-}
-
 } // namespace
 
 AppController::AppController(QObject *parent)
-    : QObject(parent), vault_(dataDirectory())
+    : QObject(parent), vault_(dataDirectory()), signing_(vault_, [this](const QString &requestId, const QByteArray &pem) {
+        QTemporaryFile file(QDir::tempPath() + QStringLiteral("/APCM-independent-response-XXXXXX.pem"));
+        if (!file.open() || file.write(pem) != pem.size() || !file.flush()) {
+            setError({domain::ErrorCategory::General, QStringLiteral("signing.install_file"), 0,
+                      QStringLiteral("无法准备业务证书安装文件。"), {}});
+            return false;
+        }
+        file.close();
+        return installEnrollmentResponse(requestId, QUrl::fromLocalFile(file.fileName()));
+    }, this)
 {
-    connect(&pkiClient_, &services::PkiConsoleClient::requestCreated,
-            this, &AppController::recordPrivatePkiSubmission);
-    connect(&pkiClient_, &services::PkiConsoleClient::certificateDownloaded,
-            this, &AppController::installDownloadedPrivatePkiCertificate);
-    connect(&pkiClient_, &services::PkiConsoleClient::authorizationUrlReady,
-            this, [this](const QUrl &url) {
-                if (!QDesktopServices::openUrl(url)) pkiClient_.browserLaunchFailed();
-            });
+    connect(&signing_, &IndependentSigningController::enrollmentChanged, this, &AppController::refresh);
 }
 
 QVariantList AppController::templates() const
@@ -245,6 +208,7 @@ bool AppController::initializeVault(const QString &masterPassword)
     const auto result = vault_.initialize(bytes);
     sodium_memzero(bytes.data(), static_cast<size_t>(bytes.size()));
     if (!result) { setError(result.error()); return false; }
+    signing_.load();
     emit vaultStateChanged();
     refresh();
     return true;
@@ -256,6 +220,7 @@ bool AppController::unlockVault(const QString &masterPassword)
     const auto result = vault_.unlock(bytes);
     sodium_memzero(bytes.data(), static_cast<size_t>(bytes.size()));
     if (!result) { setError(result.error()); return false; }
+    signing_.load();
     emit vaultStateChanged();
     refresh();
     return true;
@@ -274,13 +239,13 @@ void AppController::closeVault(const QString &auditAction)
             QStringLiteral("application"), QStringLiteral("本地加密保险库"),
             QStringLiteral("SUCCESS"), {}}));
     }
+    signing_.clear();
     vault_.lock();
     certificates_.replace({});
     enrollmentRequests_.clear();
     privateKeys_.clear();
     managedRoots_.clear();
     managedCertificates_.clear();
-    pkiConnections_.clear();
     auditEvents_.clear();
     emit vaultStateChanged();
 }
@@ -345,8 +310,6 @@ void AppController::loadVaultData()
                 {QStringLiteral("state"), enrollmentStateLabel(request.state)},
                 {QStringLiteral("provider"), request.providerName},
                 {QStringLiteral("validityDays"), request.requestedValidityDays},
-                {QStringLiteral("remoteCA"), request.remoteCA},
-                {QStringLiteral("remoteRequestId"), request.remoteRequestId},
                 {QStringLiteral("hasCsr"), !request.csrText.isEmpty()}});
         }
     }
@@ -382,15 +345,6 @@ void AppController::loadVaultData()
             managedCertificates_.append(QVariantMap{{QStringLiteral("fingerprint"), record.fingerprint},
                 {QStringLiteral("name"), record.friendlyName}, {QStringLiteral("scope"), record.scope},
                 {QStringLiteral("storeRole"), record.storeRole}, {QStringLiteral("installed"), installed}});
-        }
-    }
-
-    pkiConnections_.clear();
-    if (auto connections = vault_.connections()) {
-        for (const auto &connection : *connections) {
-            pkiConnections_.append(QVariantMap{{QStringLiteral("id"), connection.id},
-                {QStringLiteral("name"), connection.name}, {QStringLiteral("type"), connection.type},
-                {QStringLiteral("endpoint"), connection.endpoint}, {QStringLiteral("enabled"), connection.enabled}});
         }
     }
 
@@ -846,189 +800,6 @@ bool AppController::unmanageRoot(const QString &fingerprint)
     loadVaultData();
     emit dataChanged();
     return true;
-}
-
-QString AppController::savePkiConnection(const QString &id, const QString &name,
-                                         const QString &type, const QString &endpoint)
-{
-    const QString cleanName = name.trimmed();
-    const QString cleanType = type.trimmed().toLower();
-    const QString cleanEndpoint = endpoint.trimmed();
-    const QUrl endpointUrl(cleanEndpoint);
-    const bool endpointValid = endpointUrl.isValid() &&
-        (endpointUrl.scheme() == QStringLiteral("http") || endpointUrl.scheme() == QStringLiteral("https"));
-    const bool supportedType = cleanType == QStringLiteral("manual") ||
-        cleanType == QStringLiteral("http-pkcs10");
-    if (cleanName.isEmpty() || !supportedType ||
-        (cleanType != QStringLiteral("manual") && !endpointValid)) {
-        setError({domain::ErrorCategory::Validation, QStringLiteral("connection.invalid"), 0,
-                  QStringLiteral("请输入连接名称和有效的服务地址。"), {}});
-        return {};
-    }
-    const QString connectionId = id.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : id;
-    if (auto result = vault_.saveConnection({connectionId, cleanType, cleanName, cleanEndpoint, true}); !result) {
-        setError(result.error()); return {};
-    }
-    static_cast<void>(vault_.append({QDateTime::currentDateTimeUtc(), QStringLiteral("SAVE_CONNECTION"),
-        connectionId, cleanName, QStringLiteral("SUCCESS"), {}}));
-    setStatus(QStringLiteral("PKI 连接已加密保存。"));
-    loadVaultData(); emit dataChanged();
-    return connectionId;
-}
-
-bool AppController::removePkiConnection(const QString &id)
-{
-    if (auto result = vault_.removeConnection(id); !result) { setError(result.error()); return false; }
-    static_cast<void>(vault_.append({QDateTime::currentDateTimeUtc(), QStringLiteral("REMOVE_CONNECTION"),
-        id, QStringLiteral("APCM"), QStringLiteral("SUCCESS"), {}}));
-    setStatus(QStringLiteral("PKI 连接已删除。"));
-    loadVaultData(); emit dataChanged();
-    return true;
-}
-
-bool AppController::testPkiConnection(const QString &id)
-{
-    const auto found = std::find_if(pkiConnections_.cbegin(), pkiConnections_.cend(), [&](const QVariant &value) {
-        return value.toMap().value(QStringLiteral("id")).toString() == id;
-    });
-    if (found == pkiConnections_.cend()) return false;
-    const QVariantMap connection = found->toMap();
-    if (connection.value(QStringLiteral("type")).toString() == QStringLiteral("manual")) {
-        setStatus(QStringLiteral("手动连接可用：CSR 将由用户导出并通过外部流程提交。"));
-        return true;
-    }
-    const NetworkResult result = runNetworkRequest(QUrl(connection.value(QStringLiteral("endpoint")).toString()), QByteArrayLiteral("GET"));
-    if (result.status >= 200 && result.status < 400) {
-        setStatus(QStringLiteral("连接成功，服务返回 HTTP %1。").arg(result.status));
-        return true;
-    }
-    setError({domain::ErrorCategory::Network, QStringLiteral("connection.test_failed"), 0,
-              QStringLiteral("PKI 端点测试失败。"), result.status > 0
-                  ? QStringLiteral("服务返回 HTTP %1。%2").arg(result.status).arg(result.error)
-                  : result.error});
-    return false;
-}
-
-bool AppController::submitEnrollmentRequest(const QString &requestId, const QString &connectionId)
-{
-    auto requests = vault_.enrollmentRequests();
-    auto connections = vault_.connections();
-    if (!requests || !connections) return false;
-    auto request = std::find_if(requests->begin(), requests->end(), [&](const auto &value) { return value.id == requestId; });
-    const auto connection = std::find_if(connections->cbegin(), connections->cend(), [&](const auto &value) { return value.id == connectionId; });
-    if (request == requests->end() || connection == connections->cend()) {
-        setError({domain::ErrorCategory::Validation, QStringLiteral("request.submit_missing"), 0,
-                  QStringLiteral("申请或 PKI 连接不存在。"), {}});
-        return false;
-    }
-    if (connection->type == QStringLiteral("manual")) {
-        auto submitted = manualConnector_.submit({request->id, request->csrText, request->csrSha256});
-        if (!submitted) { setError(submitted.error()); return false; }
-        request->remoteCA = connection->name;
-        request->updatedAt = QDateTime::currentDateTimeUtc();
-        if (auto saved = vault_.saveEnrollmentRequest(*request); !saved) { setError(saved.error()); return false; }
-        static_cast<void>(vault_.append({QDateTime::currentDateTimeUtc(), QStringLiteral("PREPARE_MANUAL_SUBMISSION"),
-            request->id, connection->name, QStringLiteral("SUCCESS"), {}}));
-        setStatus(QStringLiteral("手动流程已准备；CSR 尚未由 APCM 提交，请先导出并交给 CA。"));
-        loadVaultData();
-        emit dataChanged();
-        return true;
-    }
-    const NetworkResult result = runNetworkRequest(QUrl(connection->endpoint), QByteArrayLiteral("POST"), request->csrText.toUtf8());
-    if (result.status < 200 || result.status >= 300) {
-        setError({domain::ErrorCategory::Network, QStringLiteral("request.submit_failed"), static_cast<quint64>(result.status),
-                  QStringLiteral("PKI 服务拒绝了证书申请。"), result.status > 0
-                      ? QStringLiteral("HTTP %1：%2").arg(result.status).arg(result.error) : result.error});
-        return false;
-    }
-    request->remoteRequestId = result.location.isEmpty()
-        ? QString::fromUtf8(result.body).trimmed().left(256) : result.location;
-    request->remoteCA = connection->name;
-    request->state = domain::EnrollmentState::Submitted;
-    request->updatedAt = QDateTime::currentDateTimeUtc();
-    if (auto saved = vault_.saveEnrollmentRequest(*request); !saved) { setError(saved.error()); return false; }
-    static_cast<void>(vault_.append({QDateTime::currentDateTimeUtc(), QStringLiteral("SUBMIT_CSR"),
-        request->id, connection->name, QStringLiteral("SUCCESS"), {}}));
-    setStatus(QStringLiteral("CSR 已提交到 %1。").arg(connection->name));
-    loadVaultData(); emit dataChanged();
-    return true;
-}
-
-void AppController::submitToPrivatePki(const QString &requestId, const QString &caId,
-                                       const QString &profileId)
-{
-    auto requests = vault_.enrollmentRequests();
-    if (!requests) { setError(requests.error()); return; }
-    const auto request = std::find_if(requests->cbegin(), requests->cend(),
-        [&](const auto &value) { return value.id == requestId; });
-    if (request == requests->cend() || request->csrText.isEmpty()) {
-        setError({domain::ErrorCategory::Validation, QStringLiteral("pki.request_missing"), 0,
-                  QStringLiteral("所选本地证书申请不存在或没有 CSR。"), {}});
-        return;
-    }
-    if (!request->remoteRequestId.isEmpty()) {
-        setError({domain::ErrorCategory::Validation, QStringLiteral("pki.request_submitted"), 0,
-                  QStringLiteral("该 CSR 已提交到私有 PKI，不能重复创建申请。"),
-                  QStringLiteral("远程申请 ID：%1").arg(request->remoteRequestId)});
-        return;
-    }
-    pkiClient_.createCertificateRequest(request->id, request->csrText,
-                                        request->requestedValidityDays, caId, profileId);
-}
-
-void AppController::recordPrivatePkiSubmission(const QString &localRequestId,
-                                               const QString &remoteRequestId,
-                                               const QString &authorityName)
-{
-    auto requests = vault_.enrollmentRequests();
-    if (!requests) { setError(requests.error()); return; }
-    auto request = std::find_if(requests->begin(), requests->end(),
-        [&](const auto &value) { return value.id == localRequestId; });
-    if (request == requests->end()) return;
-    request->remoteRequestId = remoteRequestId;
-    request->remoteCA = authorityName;
-    request->state = domain::EnrollmentState::Submitted;
-    request->updatedAt = QDateTime::currentDateTimeUtc();
-    if (auto saved = vault_.saveEnrollmentRequest(*request); !saved) {
-        setError(saved.error());
-        return;
-    }
-    static_cast<void>(vault_.append({QDateTime::currentDateTimeUtc(), QStringLiteral("SUBMIT_PRIVATE_PKI"),
-        remoteRequestId, authorityName, QStringLiteral("SUCCESS"), {}}));
-    setStatus(QStringLiteral("CSR 已提交到私有 PKI：%1。").arg(authorityName));
-    loadVaultData();
-    emit dataChanged();
-}
-
-void AppController::installPrivatePkiCertificate(const QString &remoteRequestId,
-                                                 const QString &certificateId)
-{
-    auto requests = vault_.enrollmentRequests();
-    if (!requests) { setError(requests.error()); return; }
-    const auto request = std::find_if(requests->cbegin(), requests->cend(),
-        [&](const auto &value) { return value.remoteRequestId == remoteRequestId; });
-    if (request == requests->cend()) {
-        setError({domain::ErrorCategory::Validation, QStringLiteral("pki.local_request_missing"), 0,
-                  QStringLiteral("未找到与该 PKI 记录关联的本地 CSR，无法安全关联私钥。"), {}});
-        return;
-    }
-    pkiClient_.downloadCertificate(request->id, certificateId);
-}
-
-void AppController::installDownloadedPrivatePkiCertificate(const QString &localRequestId,
-                                                           const QByteArray &pemData)
-{
-    QTemporaryFile temporary(QDir::tempPath() + QStringLiteral("/APCM-pki-response-XXXXXX.pem"));
-    temporary.setAutoRemove(true);
-    if (!temporary.open() || temporary.write(pemData) != pemData.size() || !temporary.flush()) {
-        setError({domain::ErrorCategory::General, QStringLiteral("pki.response_temp"), 0,
-                  QStringLiteral("无法准备私有 PKI 签发证书的安全临时文件。"), temporary.errorString()});
-        return;
-    }
-    temporary.close();
-    if (installEnrollmentResponse(localRequestId, QUrl::fromLocalFile(temporary.fileName()))) {
-        setStatus(QStringLiteral("私有 PKI 签发证书已安装，并与本地 CNG/TPM 私钥完成公钥核对。"));
-    }
 }
 
 } // namespace certmgr::app

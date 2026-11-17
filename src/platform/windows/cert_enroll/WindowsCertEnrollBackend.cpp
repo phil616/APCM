@@ -207,7 +207,7 @@ tl::expected<void, domain::AppError> addSubjectAlternativeNames(
     IX509CertificateRequestPkcs10 *request, const domain::CertificateTemplate &certificateTemplate)
 {
     if (certificateTemplate.dnsSans.isEmpty() && certificateTemplate.ipSans.isEmpty() &&
-        certificateTemplate.uriSans.isEmpty() && certificateTemplate.upnSans.isEmpty()) return {};
+        certificateTemplate.uriSans.isEmpty() && certificateTemplate.upnSans.isEmpty() && certificateTemplate.emailSans.isEmpty()) return {};
     auto namesResult = createCom<IAlternativeNames>(__uuidof(CAlternativeNames),
         QStringLiteral("enrollment.san_names"));
     if (!namesResult) return tl::unexpected(namesResult.error());
@@ -217,6 +217,9 @@ tl::expected<void, domain::AppError> addSubjectAlternativeNames(
             return result;
     for (const QString &value : certificateTemplate.uriSans)
         if (auto result = appendStringName(names.Get(), XCN_CERT_ALT_NAME_URL, value); !result)
+            return result;
+    for (const QString &value : certificateTemplate.emailSans)
+        if (auto result = appendStringName(names.Get(), XCN_CERT_ALT_NAME_RFC822_NAME, value); !result)
             return result;
     for (const QString &value : certificateTemplate.upnSans)
         if (auto result = appendStringName(names.Get(), XCN_CERT_ALT_NAME_USER_PRINCIPLE_NAME, value); !result)
@@ -261,9 +264,19 @@ WindowsCertEnrollBackend::createPkcs10(const domain::CertificateTemplate &certif
     if (auto result = check(key->put_MachineContext(certificateTemplate.scope == domain::StoreScope::Machine
                                                         ? VARIANT_TRUE : VARIANT_FALSE),
                             QStringLiteral("enrollment.key_scope"), QStringLiteral("无法设置密钥作用域。")); !result) return tl::unexpected(result.error());
+    if (certificateTemplate.key.algorithm.startsWith(QStringLiteral("ECDSA_"))) {
+        auto algorithm = createCom<IObjectId>(__uuidof(CObjectId), QStringLiteral("enrollment.algorithm"));
+        if (!algorithm) return tl::unexpected(algorithm.error());
+        BStr name(certificateTemplate.key.algorithm);
+        if (auto result = check((*algorithm)->InitializeFromAlgorithmName(XCN_CRYPT_PUBKEY_ALG_OID_GROUP_ID,
+                XCN_CRYPT_OID_INFO_PUBKEY_SIGN_KEY_FLAG, AlgorithmFlagsNone, name.get()),
+                QStringLiteral("enrollment.ec_algorithm"), QStringLiteral("无法配置 ECDSA 密钥算法。")); !result) return tl::unexpected(result.error());
+        if (auto result = check(key->put_Algorithm(algorithm->Get()), QStringLiteral("enrollment.ec_key"),
+                QStringLiteral("密钥提供程序不支持所选 ECDSA 曲线。")); !result) return tl::unexpected(result.error());
+    }
     if (auto result = check(key->put_Length(certificateTemplate.key.bits), QStringLiteral("enrollment.key_length"),
                             QStringLiteral("不支持所选密钥长度。")); !result) return tl::unexpected(result.error());
-    if (auto result = check(key->put_KeySpec(XCN_AT_SIGNATURE), QStringLiteral("enrollment.key_usage"),
+    if (auto result = check(key->put_KeySpec(certificateTemplate.key.algorithm.startsWith(QStringLiteral("ECDSA_")) ? XCN_AT_NONE : XCN_AT_SIGNATURE), QStringLiteral("enrollment.key_usage"),
                             QStringLiteral("无法将密钥配置为用于签名。")); !result) return tl::unexpected(result.error());
     const auto exportPolicy = certificateTemplate.key.exportable ? XCN_NCRYPT_ALLOW_EXPORT_FLAG
                                                                   : XCN_NCRYPT_ALLOW_EXPORT_NONE;
@@ -288,15 +301,26 @@ WindowsCertEnrollBackend::createPkcs10(const domain::CertificateTemplate &certif
                             QStringLiteral("enrollment.request_initialize"),
                             QStringLiteral("无法初始化 PKCS#10 申请。")); !result) return tl::unexpected(result.error());
 
-    auto subjectResult = createCom<IX500DistinguishedName>(
-        __uuidof(CX500DistinguishedName), QStringLiteral("enrollment.subject"));
-    if (!subjectResult) return tl::unexpected(subjectResult.error());
-    BStr subjectValue(subjectString(certificateTemplate));
-    if (auto result = check((*subjectResult)->Encode(subjectValue.get(), XCN_CERT_NAME_STR_NONE),
-                            QStringLiteral("enrollment.subject_encode"),
-                            QStringLiteral("证书主题无效。")); !result) return tl::unexpected(result.error());
-    if (auto result = check(request->put_Subject(subjectResult->Get()), QStringLiteral("enrollment.subject_set"),
-                            QStringLiteral("无法设置证书主题。")); !result) return tl::unexpected(result.error());
+    auto hashAlgorithm = createCom<IObjectId>(__uuidof(CObjectId), QStringLiteral("enrollment.hash"));
+    if (!hashAlgorithm) return tl::unexpected(hashAlgorithm.error());
+    BStr hashName(QStringLiteral("SHA256"));
+    if (auto result = check((*hashAlgorithm)->InitializeFromAlgorithmName(XCN_CRYPT_HASH_ALG_OID_GROUP_ID,
+            XCN_CRYPT_OID_INFO_PUBKEY_ANY, AlgorithmFlagsNone, hashName.get()),
+            QStringLiteral("enrollment.hash_initialize"), QStringLiteral("无法配置 SHA-256 签名。")); !result) return tl::unexpected(result.error());
+    if (auto result = check(request->put_HashAlgorithm(hashAlgorithm->Get()), QStringLiteral("enrollment.hash_set"),
+            QStringLiteral("无法设置申请签名算法。")); !result) return tl::unexpected(result.error());
+
+    if (!subjectString(certificateTemplate).isEmpty()) {
+        auto subjectResult = createCom<IX500DistinguishedName>(
+            __uuidof(CX500DistinguishedName), QStringLiteral("enrollment.subject"));
+        if (!subjectResult) return tl::unexpected(subjectResult.error());
+        BStr subjectValue(subjectString(certificateTemplate));
+        if (auto result = check((*subjectResult)->Encode(subjectValue.get(), XCN_CERT_NAME_STR_NONE),
+                                QStringLiteral("enrollment.subject_encode"),
+                                QStringLiteral("证书主题无效。")); !result) return tl::unexpected(result.error());
+        if (auto result = check(request->put_Subject(subjectResult->Get()), QStringLiteral("enrollment.subject_set"),
+                                QStringLiteral("无法设置证书主题。")); !result) return tl::unexpected(result.error());
+    }
     if (auto result = addEku(request.Get(), certificateTemplate.extendedKeyUsage); !result)
         return tl::unexpected(result.error());
     if (auto result = addKeyUsage(request.Get(), certificateTemplate.keyUsage); !result)

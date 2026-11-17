@@ -28,7 +28,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $env:VCPKG_ROOT 'scripts\buildsystem
     throw "vcpkg was not found at VCPKG_ROOT=$env:VCPKG_ROOT"
 }
 
-$command = 'call "{0}" -arch=x64 -host_arch=x64 && cd /d "{1}" && cmake --preset windows-msvc-debug && cmake --build --preset windows-msvc-debug && "{2}" --debug --no-translations --qmldir "{1}\src\ui" "{1}\build\debug\CertificateManager.exe" && cmake --build build/debug --target all_qmllint && ctest --preset windows-msvc-debug' -f $developerPrompt, $repository, $deployTool
+$command = 'call "{0}" -arch=x64 -host_arch=x64 && cd /d "{1}" && cmake --preset windows-msvc-debug && cmake --build --preset windows-msvc-debug && copy /Y "{1}\build\debug\vcpkg_installed\x64-windows\debug\bin\libssl-3-x64.dll" "{1}\build\debug" >nul && "{2}" --debug --no-translations --qmldir "{1}\src\ui" "{1}\build\debug\CertificateManager.exe" && cmake --build build/debug --target all_qmllint && ctest --preset windows-msvc-debug' -f $developerPrompt, $repository, $deployTool
 
 & cmd.exe /d /s /c $command
 if ($LASTEXITCODE -ne 0) {

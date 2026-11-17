@@ -61,7 +61,7 @@ if (Test-Path -LiteralPath $resolvedStage) {
 New-Item -ItemType Directory -Path $resolvedStage -Force | Out-Null
 New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
 
-$nativeBuild = 'call "{0}" -arch=x64 -host_arch=x64 && cd /d "{1}" && cmake --preset windows-msvc-release && cmake --build --preset windows-msvc-release && cmake --build build/release --target all_qmllint && ctest --preset windows-msvc-release && cmake --install "{2}" --prefix "{3}" --config Release' -f $developerPrompt, $repository, $buildDirectory, $resolvedStage
+$nativeBuild = 'call "{0}" -arch=x64 -host_arch=x64 && cd /d "{1}" && cmake --preset windows-msvc-release && cmake --build --preset windows-msvc-release && cmake --build build/release --target all_qmllint && copy /Y "{2}\vcpkg_installed\x64-windows\bin\libssl-3-x64.dll" "{2}" >nul && ctest --preset windows-msvc-release && cmake --install "{2}" --prefix "{3}" --config Release' -f $developerPrompt, $repository, $buildDirectory, $resolvedStage
 & cmd.exe /d /s /c $nativeBuild
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
@@ -99,7 +99,7 @@ if (-not $runtimeFiles) {
 Copy-Item -LiteralPath $runtimeFiles.FullName -Destination $applicationDirectory -Force
 
 $vcpkgRuntimeDirectory = Join-Path $buildDirectory 'vcpkg_installed\x64-windows\bin'
-foreach ($runtimeName in @('libsodium.dll', 'sqlcipher.dll', 'libcrypto-3-x64.dll')) {
+foreach ($runtimeName in @('libsodium.dll', 'sqlcipher.dll', 'libcrypto-3-x64.dll', 'libssl-3-x64.dll')) {
     $runtimePath = Join-Path $vcpkgRuntimeDirectory $runtimeName
     if (-not (Test-Path -LiteralPath $runtimePath)) {
         throw "Required runtime dependency is missing: $runtimePath"

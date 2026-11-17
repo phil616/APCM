@@ -68,7 +68,7 @@
     <Feature
         Id="ProductFeature"
         Title="APCM 主程序"
-        Description="APCM 证书、私钥、信任存储和 PKI 管理组件。"
+        Description="APCM 证书、私钥和信任存储管理组件。"
         Level="1"
         AllowAbsent="no"
         AllowAdvertise="no">

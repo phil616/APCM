@@ -1,14 +1,13 @@
 #pragma once
 
 #include "CertificateListModel.h"
+#include "IndependentSigningController.h"
 #include "../persistence/SqlCipherVault.h"
 #include "../platform/windows/certificate_store/WindowsCertificateStore.h"
 #include "../platform/windows/cert_enroll/WindowsCertEnrollBackend.h"
 #include "../platform/windows/cng/WindowsCngKeyProvider.h"
 #include "../platform/windows/privilege/ElevatedHelperLauncher.h"
 #include "../services/TemplateService.h"
-#include "../services/PkiConsoleClient.h"
-#include "../connectors/ManualCAConnector.h"
 
 #include <QObject>
 #include <QUrl>
@@ -19,7 +18,7 @@ namespace certmgr::app {
 class AppController final : public QObject {
     Q_OBJECT
     Q_PROPERTY(CertificateListModel *certificates READ certificates CONSTANT)
-    Q_PROPERTY(certmgr::services::PkiConsoleClient *pki READ pki CONSTANT)
+    Q_PROPERTY(IndependentSigningController *signing READ signing CONSTANT)
     Q_PROPERTY(bool vaultExists READ vaultExists NOTIFY vaultStateChanged)
     Q_PROPERTY(bool unlocked READ unlocked NOTIFY vaultStateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
@@ -33,13 +32,12 @@ class AppController final : public QObject {
     Q_PROPERTY(QVariantList privateKeys READ privateKeys NOTIFY dataChanged)
     Q_PROPERTY(QVariantList managedRoots READ managedRoots NOTIFY dataChanged)
     Q_PROPERTY(QVariantList managedCertificates READ managedCertificates NOTIFY dataChanged)
-    Q_PROPERTY(QVariantList pkiConnections READ pkiConnections NOTIFY dataChanged)
     Q_PROPERTY(QVariantList auditEvents READ auditEvents NOTIFY dataChanged)
 
 public:
     explicit AppController(QObject *parent = nullptr);
     CertificateListModel *certificates() { return &certificates_; }
-    services::PkiConsoleClient *pki() { return &pkiClient_; }
+    IndependentSigningController *signing() { return &signing_; }
     bool vaultExists() const { return vault_.exists(); }
     bool unlocked() const { return vault_.isUnlocked(); }
     bool busy() const { return busy_; }
@@ -53,7 +51,6 @@ public:
     QVariantList privateKeys() const { return privateKeys_; }
     QVariantList managedRoots() const { return managedRoots_; }
     QVariantList managedCertificates() const { return managedCertificates_; }
-    QVariantList pkiConnections() const { return pkiConnections_; }
     QVariantList auditEvents() const { return auditEvents_; }
 
     Q_INVOKABLE bool initializeVault(const QString &masterPassword);
@@ -75,17 +72,8 @@ public:
     Q_INVOKABLE QString requestCsr(const QString &requestId) const;
     Q_INVOKABLE bool exportRequestCsr(const QString &requestId, const QUrl &destination);
     Q_INVOKABLE bool installEnrollmentResponse(const QString &requestId, const QUrl &source);
-    Q_INVOKABLE bool submitEnrollmentRequest(const QString &requestId, const QString &connectionId);
-    Q_INVOKABLE void submitToPrivatePki(const QString &requestId, const QString &caId,
-                                        const QString &profileId);
-    Q_INVOKABLE void installPrivatePkiCertificate(const QString &remoteRequestId,
-                                                  const QString &certificateId);
     Q_INVOKABLE bool manageRoot(const QString &certificateId);
     Q_INVOKABLE bool unmanageRoot(const QString &fingerprint);
-    Q_INVOKABLE QString savePkiConnection(const QString &id, const QString &name,
-                                          const QString &type, const QString &endpoint);
-    Q_INVOKABLE bool removePkiConnection(const QString &id);
-    Q_INVOKABLE bool testPkiConnection(const QString &id);
     Q_INVOKABLE void clearMessage();
 
 signals:
@@ -102,11 +90,6 @@ private:
     void setError(const domain::AppError &error);
     void setStatus(QString message);
     static QByteArray decodeCertificateFile(const QByteArray &contents);
-    void recordPrivatePkiSubmission(const QString &localRequestId,
-                                    const QString &remoteRequestId,
-                                    const QString &authorityName);
-    void installDownloadedPrivatePkiCertificate(const QString &localRequestId,
-                                                const QByteArray &pemData);
 
     CertificateListModel certificates_;
     platform::windows::WindowsCertificateStore certificateStore_;
@@ -114,9 +97,8 @@ private:
     platform::windows::WindowsCertEnrollBackend enrollmentBackend_;
     platform::windows::ElevatedHelperLauncher elevatedHelper_;
     services::TemplateService templateService_;
-    services::PkiConsoleClient pkiClient_;
-    connectors::ManualCAConnector manualConnector_;
     persistence::SqlCipherVault vault_;
+    IndependentSigningController signing_;
     bool busy_{false};
     bool tpmReady_{false};
     int expiringSoon_{0};
@@ -127,7 +109,6 @@ private:
     QVariantList privateKeys_;
     QVariantList managedRoots_;
     QVariantList managedCertificates_;
-    QVariantList pkiConnections_;
     QVariantList auditEvents_;
 };
 

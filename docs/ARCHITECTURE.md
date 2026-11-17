@@ -36,7 +36,7 @@ random DB_KEY ──XChaCha20-Poly1305(KEK)──> vault.meta
 vault.db ──SQLCipher(DB_KEY)──> encrypted metadata
 ```
 
-修改主密码只需重新封装 `DB_KEY`。`enrollment_requests` 保存 provider/container 引用、摘要、公开 CSR、申请有效期和工作流状态，不存在 private key 列。数据库删除不会触碰 Windows Certificate Store 或 CNG。架构版本 2 增加了申请名称、申请有效期和 CSR 字段，并会从版本 1 自动迁移。
+修改主密码只需重新封装 `DB_KEY`。`enrollment_requests` 保存 provider/container 引用、摘要、公开 CSR、申请有效期和工作流状态，不存在 private key 列。数据库删除不会触碰 Windows Certificate Store 或 CNG。架构版本 2 增加了申请名称、申请有效期和 CSR 字段，并会从版本 1 自动迁移。架构版本 3 增加独立签发记录表，并从版本 1、2 自动迁移。保留旧申请中的远程元数据和历史审计记录以兼容已有保险库；新保险库不再创建旧连接配置表。
 
 ## Elevation
 
@@ -58,7 +58,7 @@ vault.db ──SQLCipher(DB_KEY)──> encrypted metadata
 - `XCN_NCRYPT_ALLOW_EXPORT_NONE`
 - EKU `1.3.6.1.5.5.7.3.2` (`clientAuth`)
 
-`CreateRequest()` 直接返回 PKCS#10 文本，并将该公开请求材料加密保存到 SQLCipher 以便后续查看和提交。只有用户主动复制或提交时 CSR 才离开 APCM；私钥不会离开 CNG provider。
+`CreateRequest()` 直接返回 PKCS#10 文本，并将该公开请求材料加密保存到 SQLCipher 以便后续查看和导出。用户复制或导出 CSR 后，通过外部流程交给 CA 签发；私钥不会离开 CNG provider。
 
 申请界面允许配置 CN/O/OU/L/ST/C、DNS/IP/URI/UPN SAN、用户或计算机作用域、软件 KSP 或 TPM、RSA 2048/3072/4096、导出策略、Key Usage 与标准或自定义 EKU。TPM 强制不可导出并限制为 RSA 2048。用户填写的“申请有效期”属于提交给 CA 的工作流元数据，因为 PKCS#10 本身不定义最终证书有效期；最终值由 CA 策略决定。
 
@@ -68,12 +68,12 @@ CA 返回叶证书后，APCM 不再创建空的 CertEnroll 会话。它从加密
 
 APCM 管理证书是 SQLCipher 中对 Windows 证书指纹的引用。所有经统一安装管线或签发响应安装的证书都会自动登记；已有第三方根证书也可手动加入。移出管理不会删除 Windows 证书，删除 Windows 证书也不会自动删除关联私钥。
 
-## PKI connections
+## Independent signing
 
-手动连接使用 `ManualCAConnector` 准备外部交接，但不会伪装成已经联系 CA，也不会把申请错误标记为已提交。通用 HTTP 连接会严格检查 HTTP 状态，并以 `application/pkcs10` 将 CSR 实际 POST 到配置地址。它不是完整的 EST、SCEP 或 ACME 协议实现。V1 不在连接配置中保存口令或 API 密钥。
+`IndependentSigningController` 向 QML 暴露连接、可恢复签发任务和实例所有者管理。`SigningProtocol` 使用 OpenSSL 校验 PKCS#10、SAN-only 限制、证书公钥/身份/指纹/序列号、每一种目标 EKU 的链验证及 CRL 的 critical IDP 作用域。默认 ECDSA P-256 密钥由 CertEnroll 在当前用户 CNG 中创建，不上传私钥。
 
-## PKI-Console integration
+`SigningHttpClient` 为 Holder 和 Owner 各维护一个网络会话。两者分别配置 mTLS 身份、服务器根、代理和超时；Holder 禁止 Cookie，Owner 不发送签发 Token。请求固定 origin，始终验证服务器 TLS，禁止重定向；mTLS 使用用户选择的 PFX 或 PEM，不使用业务签发者 CA 作为通信身份。
 
-`PkiConsoleClient` 是异步 Qt Network 服务，单独维护 Cloudflare OAuth 与 PKI-Console 应用会话。它从未授权响应的 `WWW-Authenticate` 开始发现 protected-resource、授权服务器与动态注册端点，在 `127.0.0.1` 随机端口启动一次性回调，使用系统默认浏览器和 PKCE S256 获取 opaque bearer token。access/refresh token 由 `WindowsCredentialStore` 写入 Windows Credential Manager；PKI-Console Cookie Jar、CSRF token 和本地密码只存在于当前进程。
+`independent_signing_records` 保存公开连接元数据、任务原始 JSON 字节/幂等键、证书记录、待确认吊销原因、Owner 创建待核对标记和限速等待。Token 明文只存 `SigningCredentialStore` 对应的 Windows 凭据管理器，目标名包含保险库路径摘要和连接 UUID。锁定会清除网络会话，恢复时不自动重发请求。
 
-业务请求只发往固定 Console API origin，禁用自动重定向，并附加 Bearer、host-only Cookie 和按方法需要的 CSRF token。创建证书申请时使用可复用的 Idempotency-Key；本地 `enrollment_requests.remote_request_id` 记录远程申请关系。签发后客户端下载 PEM 链、选取叶证书，并复用既有 CertEnroll/CNG 公钥匹配与 UAC 安装管线，因此 PKI 集成不会改变私钥权威边界。
+完整操作说明见 [INDEPENDENT_SIGNING.md](INDEPENDENT_SIGNING.md)。

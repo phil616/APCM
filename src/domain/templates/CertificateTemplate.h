@@ -37,6 +37,7 @@ struct CertificateTemplate {
     QStringList ipSans;
     QStringList uriSans;
     QStringList upnSans;
+    QStringList emailSans;
     KeyPolicy key;
     QStringList keyUsage;
     QStringList extendedKeyUsage;

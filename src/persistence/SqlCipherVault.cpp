@@ -271,7 +271,20 @@ COMMIT;
                 lock();
                 return result;
             }
-        } else if (version != 2) {
+            version = 2;
+        }
+        if (version == 2) {
+            if (auto result = execute(R"SQL(
+BEGIN IMMEDIATE;
+CREATE TABLE independent_signing_records (
+    kind TEXT NOT NULL, id TEXT NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(kind,id)
+);
+UPDATE schema_version SET version=3;
+COMMIT;
+)SQL"); !result) { lock(); return result; }
+            version = 3;
+        }
+        if (version != 3) {
             lock();
             return tl::unexpected(vaultError(QStringLiteral("vault.schema_unsupported"),
                 QStringLiteral("保险库架构版本不受支持。"), QString::number(version)));
@@ -281,8 +294,11 @@ COMMIT;
     auto schemaResult = execute(R"SQL(
 BEGIN IMMEDIATE;
 CREATE TABLE schema_version (version INTEGER NOT NULL);
-INSERT INTO schema_version VALUES (2);
+INSERT INTO schema_version VALUES (3);
 CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
+CREATE TABLE independent_signing_records (
+    kind TEXT NOT NULL, id TEXT NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(kind,id)
+);
 CREATE TABLE certificate_references (
     fingerprint_sha256 TEXT PRIMARY KEY, scope TEXT NOT NULL, store_role TEXT NOT NULL,
     friendly_name TEXT, tags_json TEXT NOT NULL DEFAULT '[]', notes TEXT
@@ -302,9 +318,6 @@ CREATE TABLE enrollment_requests (
 CREATE TABLE enrollment_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL, timestamp TEXT NOT NULL,
     from_state TEXT, to_state TEXT NOT NULL, details_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE TABLE ca_connections (
-    id TEXT PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL, config_json TEXT NOT NULL, enabled INTEGER NOT NULL
 );
 CREATE TABLE trusted_ca_profiles (
     id TEXT PRIMARY KEY, fingerprint_sha256 TEXT NOT NULL, scope TEXT NOT NULL, metadata_json TEXT NOT NULL
@@ -546,55 +559,55 @@ SqlCipherVault::managedCertificates() const
     return records;
 }
 
-tl::expected<void, domain::AppError> SqlCipherVault::saveConnection(const ConnectionRecord &record)
+tl::expected<void, domain::AppError>
+SqlCipherVault::saveSigningRecord(const QString &kind, const QString &id, const QJsonObject &record)
 {
     if (!database_) return tl::unexpected(vaultError(QStringLiteral("vault.locked"), QStringLiteral("请先解锁保险库。")));
-    const QJsonObject config{{QStringLiteral("endpoint"), record.endpoint}};
     sqlite3_stmt *statement = nullptr;
-    constexpr auto sql = "INSERT OR REPLACE INTO ca_connections(id,type,name,config_json,enabled) VALUES(?,?,?,?,?);";
+    constexpr auto sql = "INSERT OR REPLACE INTO independent_signing_records(kind,id,record_json) VALUES(?,?,?);";
     if (sqlite3_prepare_v2(database_, sql, -1, &statement, nullptr) != SQLITE_OK)
-        return tl::unexpected(vaultError(QStringLiteral("vault.connection_prepare"), QStringLiteral("无法准备 PKI 连接记录。")));
+        return tl::unexpected(vaultError(QStringLiteral("signing.save"), QStringLiteral("无法保存独立签发记录。")));
     const auto cleanup = qScopeGuard([&] { sqlite3_finalize(statement); });
-    bindText(statement, 1, record.id); bindText(statement, 2, record.type); bindText(statement, 3, record.name);
-    bindText(statement, 4, QString::fromUtf8(QJsonDocument(config).toJson(QJsonDocument::Compact)));
-    sqlite3_bind_int(statement, 5, record.enabled ? 1 : 0);
+    bindText(statement, 1, kind); bindText(statement, 2, id);
+    bindText(statement, 3, QString::fromUtf8(QJsonDocument(record).toJson(QJsonDocument::Compact)));
     if (sqlite3_step(statement) != SQLITE_DONE)
-        return tl::unexpected(vaultError(QStringLiteral("vault.connection_write"), QStringLiteral("无法保存 PKI 连接。")));
+        return tl::unexpected(vaultError(QStringLiteral("signing.write"), QStringLiteral("独立签发记录持久化失败，已停止发送请求。")));
     return {};
 }
 
-tl::expected<void, domain::AppError> SqlCipherVault::removeConnection(const QString &id)
+tl::expected<QVariantList, domain::AppError>
+SqlCipherVault::signingRecords(const QString &kind) const
 {
     if (!database_) return tl::unexpected(vaultError(QStringLiteral("vault.locked"), QStringLiteral("请先解锁保险库。")));
     sqlite3_stmt *statement = nullptr;
-    if (sqlite3_prepare_v2(database_, "DELETE FROM ca_connections WHERE id=?;", -1, &statement, nullptr) != SQLITE_OK)
-        return tl::unexpected(vaultError(QStringLiteral("vault.connection_remove_prepare"), QStringLiteral("无法准备删除 PKI 连接。")));
+    constexpr auto sql = "SELECT record_json FROM independent_signing_records WHERE kind=? ORDER BY rowid DESC;";
+    if (sqlite3_prepare_v2(database_, sql, -1, &statement, nullptr) != SQLITE_OK)
+        return tl::unexpected(vaultError(QStringLiteral("signing.list"), QStringLiteral("无法读取独立签发记录。")));
     const auto cleanup = qScopeGuard([&] { sqlite3_finalize(statement); });
-    bindText(statement, 1, id);
-    if (sqlite3_step(statement) != SQLITE_DONE)
-        return tl::unexpected(vaultError(QStringLiteral("vault.connection_remove"), QStringLiteral("无法删除 PKI 连接。")));
-    return {};
-}
-
-tl::expected<std::vector<SqlCipherVault::ConnectionRecord>, domain::AppError>
-SqlCipherVault::connections() const
-{
-    if (!database_) return tl::unexpected(vaultError(QStringLiteral("vault.locked"), QStringLiteral("请先解锁保险库。")));
-    sqlite3_stmt *statement = nullptr;
-    if (sqlite3_prepare_v2(database_, "SELECT id,type,name,config_json,enabled FROM ca_connections ORDER BY name;", -1, &statement, nullptr) != SQLITE_OK)
-        return tl::unexpected(vaultError(QStringLiteral("vault.connection_list"), QStringLiteral("无法读取 PKI 连接。")));
-    const auto cleanup = qScopeGuard([&] { sqlite3_finalize(statement); });
-    std::vector<ConnectionRecord> records;
-    int stepResult = SQLITE_OK;
-    while ((stepResult = sqlite3_step(statement)) == SQLITE_ROW) {
-        const auto config = QJsonDocument::fromJson(columnText(statement, 3).toUtf8()).object();
-        records.push_back({columnText(statement, 0), columnText(statement, 1), columnText(statement, 2),
-                           config.value(QStringLiteral("endpoint")).toString(), sqlite3_column_int(statement, 4) != 0});
+    bindText(statement, 1, kind);
+    QVariantList result;
+    int step = SQLITE_OK;
+    while ((step = sqlite3_step(statement)) == SQLITE_ROW) {
+        const auto document = QJsonDocument::fromJson(columnText(statement, 0).toUtf8());
+        if (!document.isObject()) return tl::unexpected(vaultError(QStringLiteral("signing.record_invalid"), QStringLiteral("独立签发记录损坏。")));
+        result.append(document.object().toVariantMap());
     }
-    if (stepResult != SQLITE_DONE)
-        return tl::unexpected(vaultError(QStringLiteral("vault.connection_read"),
-            QStringLiteral("读取 PKI 连接时数据库返回错误。"), QString::fromUtf8(sqlite3_errmsg(database_))));
-    return records;
+    if (step != SQLITE_DONE) return tl::unexpected(vaultError(QStringLiteral("signing.read"), QStringLiteral("读取独立签发记录失败。")));
+    return result;
+}
+
+tl::expected<void, domain::AppError>
+SqlCipherVault::removeSigningRecord(const QString &kind, const QString &id)
+{
+    if (!database_) return tl::unexpected(vaultError(QStringLiteral("vault.locked"), QStringLiteral("请先解锁保险库。")));
+    sqlite3_stmt *statement = nullptr;
+    constexpr auto sql = "DELETE FROM independent_signing_records WHERE kind=? AND id=?;";
+    if (sqlite3_prepare_v2(database_, sql, -1, &statement, nullptr) != SQLITE_OK)
+        return tl::unexpected(vaultError(QStringLiteral("signing.remove"), QStringLiteral("无法准备删除签发配置。")));
+    const auto cleanup = qScopeGuard([&] { sqlite3_finalize(statement); });
+    bindText(statement, 1, kind); bindText(statement, 2, id);
+    if (sqlite3_step(statement) != SQLITE_DONE) return tl::unexpected(vaultError(QStringLiteral("signing.remove_failed"), QStringLiteral("无法删除签发配置。")));
+    return {};
 }
 
 } // namespace certmgr::persistence

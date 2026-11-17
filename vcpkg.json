@@ -4,6 +4,7 @@
   "version-string": "0.1.1",
   "dependencies": [
     "libsodium",
+    "openssl",
     "tl-expected",
     {
       "name": "sqlcipher",

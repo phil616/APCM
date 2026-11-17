@@ -6,6 +6,7 @@
 #include "../domain/enrollment/EnrollmentRequest.h"
 
 #include <QFileInfo>
+#include <QJsonObject>
 #include <QVariantList>
 #include <memory>
 #include <vector>
@@ -21,13 +22,6 @@ public:
         QString scope;
         QString storeRole;
         QString friendlyName;
-    };
-    struct ConnectionRecord {
-        QString id;
-        QString type;
-        QString name;
-        QString endpoint;
-        bool enabled{true};
     };
 
     explicit SqlCipherVault(QString directoryPath);
@@ -47,9 +41,10 @@ public:
     tl::expected<void, domain::AppError> removeManagedRoot(const QString &fingerprint);
     tl::expected<std::vector<ManagedRootRecord>, domain::AppError> managedRoots() const;
     tl::expected<std::vector<ManagedRootRecord>, domain::AppError> managedCertificates() const;
-    tl::expected<void, domain::AppError> saveConnection(const ConnectionRecord &record);
-    tl::expected<void, domain::AppError> removeConnection(const QString &id);
-    tl::expected<std::vector<ConnectionRecord>, domain::AppError> connections() const;
+
+    tl::expected<void, domain::AppError> saveSigningRecord(const QString &kind, const QString &id, const QJsonObject &record);
+    tl::expected<QVariantList, domain::AppError> signingRecords(const QString &kind) const;
+    tl::expected<void, domain::AppError> removeSigningRecord(const QString &kind, const QString &id);
 
     [[nodiscard]] QString databasePath() const;
     [[nodiscard]] QString metadataPath() const;

@@ -33,6 +33,7 @@ struct EnrollmentRequest {
     QString providerName;
     QString keyContainerName;
     EnrollmentState state{EnrollmentState::Draft};
+    // Retain legacy remote metadata when reading and saving existing vault records.
     QString remoteRequestId;
     QString remoteCA;
     QString certificateFingerprint;

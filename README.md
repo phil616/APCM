@@ -10,6 +10,7 @@ APCM（AltasCI multi-Platform Certificate Manager）是基于 Qt 6 / C++20 的�
 - 区分证书与私钥，显示 CNG Provider、Container、TPM 与导出策略
 - 枚举 Windows CNG 持久化密钥并检测 Microsoft Platform Crypto Provider
 - 使用 CertEnroll 直接生成 PKCS#10；可选择 CurrentUser/LocalMachine、Microsoft Software KSP 或 Microsoft Platform Crypto Provider（TPM）、RSA 长度与导出策略
+- 支持查看、复制和导出 CSR，交由外部 CA 签发后安装返回的证书
 - 创建申请时可自定义完整 X.500 主题、DNS/IP/URI/UPN SAN、Key Usage、标准或自定义 EKU 与期望有效期，并加密保存 CSR 和申请状态
 - 安装签发响应时依据申请记录恢复 CNG Provider/Container，使用公钥比对拒绝错误证书，再写入 `CERT_KEY_PROV_INFO`，确保签发证书可实际调用原私钥
 - 使用 SQLCipher 保存应用元数据，使用 libsodium Argon2id + XChaCha20-Poly1305 封装随机数据库密钥
@@ -17,8 +18,8 @@ APCM（AltasCI multi-Platform Certificate Manager）是基于 Qt 6 / C++20 的�
 - 安装 PEM、CRT、CER、DER 证书及多证书 PEM 链；安装 P12/PFX 时验证密码并导入关联私钥
 - 可选择当前用户或本地计算机的个人、根 CA、中间 CA、企业信任存储；通过 APCM 安装的证书自动加入加密管理清单
 - 实时显示可枚举的 CNG/KSP 密钥，并区分 TPM、硬件与软件密钥
-- 可配置手动工作流和通用 HTTP PKCS#10 连接，支持严格的 HTTP 状态检查及实际 CSR POST
-- 集成 PKI-Console 私有 PKI：通过系统浏览器完成 Cloudflare Managed OAuth + PKCE，再以本地账户建立 Cookie/CSRF 会话；可选择 CA/签名配置档、提交本地 CSR、查看角色过滤后的证书清单并安装签发证书
+- “AltasCI 证书管理”：独立签发 Token、SAN-only CSR、可恢复签发任务、查询/导出/吊销、CA/CRL，以及隔离的实例所有者管理
+- 独立配置 HTTP 通信 mTLS（PFX 或 PEM）、HTTPS 服务器根、业务证书信任根、代理与超时；缺少通信证书时给出专门提示
 - 结构化、版本化证书模板与可查询的本地加密审计日志
 - 全中文 Qt Quick / QML 传统 Windows 管理控制台界面，英文使用 Consolas、中文使用黑体
 - 显式安全退出与窗口关闭锁定：关闭 SQLCipher 连接、清零内存数据库密钥并保持加密数据持久化
@@ -34,8 +35,8 @@ APCM（AltasCI multi-Platform Certificate Manager）是基于 Qt 6 / C++20 的�
 - 删除证书不会删除关联私钥。
 - P12/PFX 密码仅用于当前安装，不写入 SQLCipher、日志或命令行；机器级导入通过 DPAPI 临时封装后交给 UAC Helper。
 - 客户端模板只减少错误，服务端 CA / Enrollment Gateway 必须执行最终策略。
-- Cloudflare access/refresh token 只存入 Windows Credential Manager；PKI 本地密码、TOTP、应用 Cookie 和 CSRF token 不写入配置文件、SQLCipher 或日志。
-- 私有 PKI 只接收公开 CSR，不接收本地私钥；下载证书仍须通过原有 CNG 公钥匹配后才能与申请私钥关联。
+
+使用方法和凭据边界见 [AltasCI 独立签发说明](docs/INDEPENDENT_SIGNING.md)。
 
 ## 构建
 
@@ -66,7 +67,7 @@ APCM（AltasCI multi-Platform Certificate Manager）是基于 Qt 6 / C++20 的�
 脚本会自动读取 `CMakeLists.txt` 中的项目版本，执行 Release 构建、QML lint、核心测试、Qt 运行库部署和 WiX 5 打包，输出
 `build\package\APCM-<版本>-x64.msi`。安装包为 x64、per-machine 单文件 MSI，CAB 已内嵌；
 安装向导允许选择安装目录，以及是否创建开始菜单和公共桌面快捷方式；安装后会创建“应用和功能”卸载项，并支持相同 UpgradeCode 下的
-后续大版本升级。MSVC、libsodium、SQLCipher 与 OpenSSL Crypto 运行时均采用应用本地部署，
+后续大版本升级。MSVC、libsodium、SQLCipher 与 OpenSSL Crypto/SSL 运行时均采用应用本地部署，
 目标机器不需要另行运行 VC Redistributable。
 
 卸载只删除安装器部署的程序文件、快捷方式和产品注册信息，不删除 `%LOCALAPPDATA%` 下的用户
