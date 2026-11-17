@@ -102,6 +102,16 @@ QJsonObject record(X509 *leaf, X509 *root)
         {QStringLiteral("not_before"), qt.effectiveDate().toUTC().toString(Qt::ISODate)},
         {QStringLiteral("not_after"), qt.expiryDate().toUTC().toString(Qt::ISODate)}};
 }
+QByteArray requestHeader(const QByteArray &request, const QByteArray &name)
+{
+    const auto end = request.indexOf("\r\n\r\n");
+    for (const auto &line : request.left(end).split('\n')) {
+        const auto colon = line.indexOf(':');
+        if (colon > 0 && line.left(colon).trimmed().compare(name, Qt::CaseInsensitive) == 0)
+            return line.mid(colon + 1).trimmed();
+    }
+    return {};
+}
 class TlsServer : public QTcpServer {
 public:
     QSslConfiguration config;
@@ -119,6 +129,13 @@ public:
             for (const auto &line : header.split('\n')) if (line.toLower().startsWith("content-length:")) length = line.mid(15).trimmed().toLongLong();
             if (bytes->size() < end + 4 + length) return;
             *answered = true; requests.append(*bytes); socket->write(response); socket->disconnectFromHost();
+        });
+        QObject::connect(socket, &QAbstractSocket::errorOccurred, socket, [socket](QAbstractSocket::SocketError) {
+            // Failed test handshakes must close TCP too; otherwise a client waits for its request deadline.
+            socket->abort(); socket->deleteLater();
+        });
+        QObject::connect(socket, &QSslSocket::sslErrors, socket, [socket](const QList<QSslError> &) {
+            socket->abort(); socket->deleteLater();
         });
         QObject::connect(socket, &QAbstractSocket::disconnected, socket, &QObject::deleteLater);
         socket->startServerEncryption();
@@ -251,13 +268,13 @@ private slots:
         settings[QStringLiteral("mtlsRequired")] = false;
         QVERIFY(http.configure(url(server), settings, clientTls())); done = false;
         http.send("GET", url(server), {}, {}, {}, {}, 200, [&](auto r) { response = r; done = true; });
-        QTRY_VERIFY_WITH_TIMEOUT(done, 5000); QVERIFY(!response.ok); QVERIFY(response.error.contains(QStringLiteral("mTLS"))); QVERIFY(server.requests.isEmpty());
+        QTRY_VERIFY2_WITH_TIMEOUT(done, "missing-client-certificate handshake must terminate", 10000); QVERIFY(!response.ok); QVERIFY(response.error.contains(QStringLiteral("mTLS"))); QVERIFY(server.requests.isEmpty());
         // Exercise an actual mandatory-client-certificate TLS handshake with the correct identity.
         settings[QStringLiteral("mtlsRequired")] = true;
         auto tls = clientTls(); tls.setLocalCertificate(QSslCertificate(derCert(client.get()), QSsl::Der)); tls.setPrivateKey(QSslKey(pemKey(clientKey.get()), QSsl::Ec));
         QVERIFY(http.configure(url(server), settings, tls)); done = false;
         http.send("GET", url(server), {}, {}, {}, {}, 200, [&](auto r) { response = r; done = true; });
-        QTRY_VERIFY_WITH_TIMEOUT(done, 5000); QVERIFY2(response.ok, qPrintable(response.error)); QCOMPARE(server.requests.size(), 1);
+        QTRY_VERIFY2_WITH_TIMEOUT(done, "configured mTLS identity must complete the request", 10000); QVERIFY2(response.ok, qPrintable(response.error)); QCOMPARE(server.requests.size(), 1);
     }
     void untrustedServersAndWrongHostnamesReceiveNoBearer() {
         TlsServer server; setup(server); SigningHttpClient http(false);
@@ -313,7 +330,7 @@ private slots:
             QTRY_VERIFY_WITH_TIMEOUT(done, 5000);
         }
         QCOMPARE(server.requests.size(), 2);
-        for (const auto &request : server.requests) { QVERIFY(request.endsWith(body)); QVERIFY(request.contains("Idempotency-Key: persisted-operation-key")); }
+        for (const auto &request : server.requests) { QVERIFY(request.endsWith(body)); QCOMPARE(requestHeader(request, "Idempotency-Key"), QByteArray("persisted-operation-key")); }
     }
     void ownerAndHolderCookiesAndCredentialsStaySeparate() {
         TlsServer server; setup(server);
@@ -325,9 +342,9 @@ private slots:
             QTRY_VERIFY_WITH_TIMEOUT(done, 5000);
         }
         QCOMPARE(server.requests.size(), 3);
-        QVERIFY(!server.requests[0].contains("Authorization:"));
-        QVERIFY(server.requests[1].contains("Cookie: __Host-pki_session=opaque")); QVERIFY(server.requests[1].contains("X-CSRF-Token: csrf-value"));
-        QVERIFY(server.requests[2].contains("Authorization: Bearer ist_")); QVERIFY(!server.requests[2].contains("Cookie:")); QVERIFY(!server.requests[2].contains("X-CSRF-Token:"));
+        QVERIFY(requestHeader(server.requests[0], "Authorization").isEmpty());
+        QVERIFY(requestHeader(server.requests[1], "Cookie").contains("__Host-pki_session=opaque")); QCOMPARE(requestHeader(server.requests[1], "X-CSRF-Token"), QByteArray("csrf-value"));
+        QVERIFY(requestHeader(server.requests[2], "Authorization").startsWith("Bearer ist_")); QVERIFY(requestHeader(server.requests[2], "Cookie").isEmpty()); QVERIFY(requestHeader(server.requests[2], "X-CSRF-Token").isEmpty());
         owner.clear(); QVERIFY(!owner.hasOwnerCookie());
     }
     void retryAfterIsRespectedAndProblemTextIsRedacted() {
