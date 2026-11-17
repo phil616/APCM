@@ -75,13 +75,14 @@ APCM（AltasCI multi-Platform Certificate Manager）是基于 Qt 6 / C++20 的�
 
 ## GitHub 自动发版
 
-推送到 `main` 或手动运行“构建并发布 APCM MSI”工作流时，GitHub Actions 会读取
-`CMakeLists.txt` 的 `project(... VERSION X.Y.Z)`。如果仓库中尚不存在 `vX.Y.Z` Tag，工作流会在
-Windows Runner 上完成构建、QML lint、测试和 MSI 封装，随后自动创建该 Tag 与 GitHub Release，
-并上传 MSI 和对应的 `.sha256` 校验文件；已经存在相同版本 Tag 时会安全跳过，避免覆盖历史发行版。
+推送到 `main`、推送 `v*` Tag 或手动运行“构建并发布 APCM MSI”工作流时，GitHub Actions 会读取
+`CMakeLists.txt` 的 `project(... VERSION X.Y.Z)`。尚未发布该版本时，工作流在 Windows Runner 上完成
+构建、QML lint、测试和 MSI 封装，核对 Tag 指向构建提交，再上传 MSI 和 `.sha256` 到草稿，附件齐全后正式发布。
+已存在的普通 Tag 不会阻止首次发布；已有正式 Release 会跳过，已有草稿则停止供核查恢复。
 
-发布新版本只需先把 `CMakeLists.txt` 中的三段式版本号递增，再将变更推送到 `main`。MSI 升级要求
-版本号持续递增，不应删除并复用已经发布过的版本 Tag。
+发布新版本时先同步 `CMakeLists.txt` 与 `vcpkg.json` 的版本，再将提交推送到 `main`。
+也可在该提交上创建并推送同版本标签，例如 `v0.1.3`；只推标签而不修改项目版本会明确报错。
+已正式发布的版本不能移动 Tag 或覆盖附件；MSI 升级要求三段式版本号持续递增。
 
 ## 权限说明
 

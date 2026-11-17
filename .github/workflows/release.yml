@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -40,6 +42,9 @@ jobs:
           }
 
           $version = $Matches[1]
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME 与项目版本 v$version 不一致；请先修改项目版本，再创建对应 Tag。"
+          }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "msi=build/package/APCM-$version-x64.msi" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -48,22 +53,35 @@ jobs:
       - name: 检查版本是否已经发布
         id: release_check
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = '${{ steps.version.outputs.tag }}'
-          $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
-          if ($LASTEXITCODE -ne 0) {
-            throw "无法查询远程 Tag：$tag"
-          }
-
-          $shouldRelease = [string]::IsNullOrWhiteSpace(($remoteTag -join ''))
-          "should_release=$($shouldRelease.ToString().ToLowerInvariant())" |
-            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-          if ($shouldRelease) {
-            "未找到 $tag，将构建并发布 MSI。" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          $tag = $env:RELEASE_TAG
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases/tags/$tag"
+          $response = Invoke-WebRequest -Uri $uri -Headers $headers -SkipHttpErrorCheck
+          if ($response.StatusCode -eq 200) {
+            $release = $response.Content | ConvertFrom-Json
+            if ($release.draft) {
+              throw "$tag 存在未发布草稿，请先检查草稿附件和来源提交，再恢复发布。"
+            }
+            "should_release=false" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+            "已发布 $tag，本次提交不重复发版。" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          } elseif ($response.StatusCode -eq 404) {
+            $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) { throw "无法查询远程 Tag：$tag" }
+            if (-not [string]::IsNullOrWhiteSpace(($remoteTag -join ''))) {
+              $tagCommit = git rev-parse "$tag^{commit}"
+              if ($LASTEXITCODE -ne 0 -or $tagCommit.Trim() -ne $env:GITHUB_SHA) {
+                throw "未发布 Tag $tag 未指向当前构建提交；请先纠正标签，不能发布与源码不一致的 MSI。"
+              }
+            }
+            "should_release=true" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+            "尚未发布 $tag，将构建、测试并发布 MSI。" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           } else {
-            "已存在 $tag，本次提交不重复发版。" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            throw "查询 Release 失败，HTTP $($response.StatusCode)；不会把权限或网络错误当作尚未发布。"
           }
 
       - name: 安装 Qt 6.8.3
@@ -134,26 +152,48 @@ jobs:
             .wix
           key: ${{ steps.dependency_cache.outputs.cache-primary-key }}
 
-      - name: 创建 Tag 和 GitHub Release
+      - name: 创建 Tag、上传草稿并发布 GitHub Release
         if: steps.release_check.outputs.should_release == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_MSI: ${{ steps.version.outputs.msi }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $version = '${{ steps.version.outputs.version }}'
-          $tag = '${{ steps.version.outputs.tag }}'
-          $msi = '${{ steps.version.outputs.msi }}'
+          $version = $env:RELEASE_VERSION
+          $tag = $env:RELEASE_TAG
+          $msi = $env:RELEASE_MSI
+          $remoteTag = git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}"
+          if ($LASTEXITCODE -ne 0) { throw "无法核对远程 Tag：$tag" }
+          if ([string]::IsNullOrWhiteSpace(($remoteTag -join ''))) {
+            gh api --method POST "repos/$env:GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$env:GITHUB_SHA"
+            if ($LASTEXITCODE -ne 0) { throw "无法创建 Tag：$tag" }
+          } else {
+            $peeled = @($remoteTag | Where-Object { $_ -match '\^\{\}$' })
+            $tagLine = if ($peeled.Count -gt 0) { $peeled[0] } else { @($remoteTag)[0] }
+            $tagCommit = ($tagLine -split '\s+')[0]
+            if ($tagCommit -ne $env:GITHUB_SHA) { throw "远程 $tag 已变化，拒绝发布到其他提交。" }
+          }
+
           $msiAsset = "$msi#APCM $version x64 MSI"
           $checksumAsset = "$msi.sha256#APCM $version SHA-256"
+          $notesPath = "docs/releases/$tag.md"
+          $notesArguments = if (Test-Path -LiteralPath $notesPath) { @('--notes-file', $notesPath) } else { @('--generate-notes') }
+          gh release create $tag $msiAsset $checksumAsset --verify-tag --draft --title "APCM $version" @notesArguments
+          if ($LASTEXITCODE -ne 0) { throw "创建 Release 草稿失败：$tag" }
 
-          gh release create $tag $msiAsset $checksumAsset `
-            --target '${{ github.sha }}' `
-            --title "APCM $version" `
-            --generate-notes `
-            --latest
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "创建 GitHub Release 失败：$tag"
+          $details = gh release view $tag --json isDraft,assets
+          if ($LASTEXITCODE -ne 0) { throw "无法核对 Release 草稿：$tag" }
+          $release = $details | ConvertFrom-Json
+          $expectedNames = @((Split-Path -Leaf $msi), "$(Split-Path -Leaf $msi).sha256")
+          $actualNames = @($release.assets | ForEach-Object { $_.name })
+          if (-not $release.isDraft -or $actualNames.Count -ne 2 -or
+              @(Compare-Object $expectedNames $actualNames).Count -ne 0 -or
+              @($release.assets | Where-Object { $_.state -ne 'uploaded' -or $_.size -le 0 }).Count -gt 0) {
+            throw 'Release 草稿附件不完整，保留草稿供恢复，不提前发布。'
           }
-          "已创建 Release ``$tag`` 并上传 MSI 与校验文件。" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          gh release edit $tag --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw "发布 Release 失败：$tag" }
+          "已发布 Release ``$tag``，包含 MSI 和 SHA-256 校验文件。" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
