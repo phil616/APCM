@@ -120,7 +120,7 @@ void SigningHttpClient::send(const QByteArray &method, const QUrl &url, QByteArr
     connect(reply, &QNetworkReply::finished, this,
             [this, reply, timer, bytes, expectedStatus, requestId, suppressProblemDetail, completed = std::move(completed)]() mutable {
         timer->stop(); active_ = nullptr;
-        bytes->append(reply->readAll());
+        if (reply->isOpen()) bytes->append(reply->readAll());
         SigningHttpResult result;
         result.status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         result.contentType = reply->rawHeader("Content-Type");
@@ -151,7 +151,10 @@ void SigningHttpClient::send(const QByteArray &method, const QUrl &url, QByteArr
             result.problemCode = QStringLiteral("redirect_blocked");
         } else if (reply->error() != QNetworkReply::NoError && result.status == 0) {
             result.problemCode = QStringLiteral("transport_failed");
-            if (reply->property("apcmTimedOut").toBool()) result.error = QStringLiteral("请求超时；写操作的结果可能未知，请使用原任务恢复。");
+            if (reply->property("apcmTimedOut").toBool()) {
+                result.error = QStringLiteral("请求超时；写操作的结果可能未知，请使用原任务恢复。");
+                if (!hasIdentity()) result.error += QStringLiteral("若此入口要求 HTTP 通信 mTLS，请先加载专用通信客户端证书和私钥；当前未加载通信身份。");
+            }
             else if (reply->error() == QNetworkReply::SslHandshakeFailedError) {
                 result.error = QStringLiteral("TLS 握手失败。请检查 HTTPS 服务器信任根和主机名；此端点也可能要求专用的通信 mTLS 客户端证书。%1")
                     .arg(hasIdentity() ? QStringLiteral("已加载通信证书，请检查其授权、证书链和有效期。") : QStringLiteral("尚未加载通信证书，请先在连接配置中提供。"));

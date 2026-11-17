@@ -264,17 +264,20 @@ private slots:
         bool done = false; SigningHttpResult response;
         http.send("GET", url(server), {}, {}, {}, {}, 200, [&](auto r) { response = r; done = true; });
         QVERIFY(done); QCOMPARE(response.problemCode, QStringLiteral("mtls_required")); QVERIFY(server.requests.isEmpty());
-        // Without a predeclared requirement, a real missing-certificate handshake still gives an mTLS hint.
-        settings[QStringLiteral("mtlsRequired")] = false;
-        QVERIFY(http.configure(url(server), settings, clientTls())); done = false;
-        http.send("GET", url(server), {}, {}, {}, {}, 200, [&](auto r) { response = r; done = true; });
-        QTRY_VERIFY2_WITH_TIMEOUT(done, "missing-client-certificate handshake must terminate", 10000); QVERIFY(!response.ok); QVERIFY(response.error.contains(QStringLiteral("mTLS"))); QVERIFY(server.requests.isEmpty());
-        // Exercise an actual mandatory-client-certificate TLS handshake with the correct identity.
-        settings[QStringLiteral("mtlsRequired")] = true;
+        // A valid identity must complete a real mandatory-client-certificate handshake.
+        settings[QStringLiteral("timeoutSeconds")] = 5;
         auto tls = clientTls(); tls.setLocalCertificate(QSslCertificate(derCert(client.get()), QSsl::Der)); tls.setPrivateKey(QSslKey(pemKey(clientKey.get()), QSsl::Ec));
         QVERIFY(http.configure(url(server), settings, tls)); done = false;
         http.send("GET", url(server), {}, {}, {}, {}, 200, [&](auto r) { response = r; done = true; });
-        QTRY_VERIFY2_WITH_TIMEOUT(done, "configured mTLS identity must complete the request", 10000); QVERIFY2(response.ok, qPrintable(response.error)); QCOMPARE(server.requests.size(), 1);
+        QTRY_VERIFY2_WITH_TIMEOUT(done, "configured mTLS identity must complete the request", 10000);
+        QVERIFY2(response.ok, qPrintable(response.error)); QCOMPARE(server.requests.size(), 1);
+        // Some platforms wait for the request deadline when the peer rejects an absent identity.
+        // Use an explicit short deadline and still require zero additional HTTP requests.
+        settings[QStringLiteral("mtlsRequired")] = false;
+        QVERIFY(http.configure(url(server), settings, clientTls())); done = false;
+        http.send("GET", url(server), {}, {}, {}, {}, 200, [&](auto r) { response = r; done = true; });
+        QTRY_VERIFY2_WITH_TIMEOUT(done, "missing-client-certificate handshake must respect its deadline", 10000);
+        QVERIFY(!response.ok); QVERIFY(response.error.contains(QStringLiteral("mTLS"))); QCOMPARE(server.requests.size(), 1);
     }
     void untrustedServersAndWrongHostnamesReceiveNoBearer() {
         TlsServer server; setup(server); SigningHttpClient http(false);
