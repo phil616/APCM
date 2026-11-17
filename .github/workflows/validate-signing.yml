@@ -1,0 +1,63 @@
+name: Windows CSR 与服务端兼容性验证
+
+on:
+  push:
+    branches: [fix/independent-csr]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apcm-csr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.vcpkg-cache
+      GOTOOLCHAIN: auto
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: 安装 Qt 6.8.3
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          cache: true
+      - name: 恢复依赖缓存
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .vcpkg-cache
+          key: ${{ runner.os }}-vcpkg-x64-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: ${{ runner.os }}-vcpkg-x64-
+      - name: 配置构建环境
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path $env:VCPKG_DEFAULT_BINARY_CACHE -Force | Out-Null
+          $fixtures = Join-Path $env:RUNNER_TEMP 'apcm-native-csr'
+          "APCM_CSR_FIXTURE_DIR=$fixtures" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "QT_ROOT=$env:QT_ROOT_DIR" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Add-Content -LiteralPath $env:GITHUB_ENV
+      - name: 构建并测试真实 Windows CSR
+        shell: pwsh
+        run: |
+          .\scripts\build.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows build/tests failed: $LASTEXITCODE" }
+      - name: 使用服务端原始代码校验并签发 CSR
+        shell: pwsh
+        run: .\scripts\verify-independent-csr.ps1 -FixtureDirectory $env:APCM_CSR_FIXTURE_DIR
+      - name: 输出失败诊断
+        if: failure()
+        shell: pwsh
+        run: |
+          foreach ($path in @('build/debug/independent-enrollment-tests.xml', 'build/debug/signing-tests.xml', 'build/debug/Testing/Temporary/LastTest.log')) {
+            if (Test-Path -LiteralPath $path) { Write-Output "::group::$path"; Get-Content -LiteralPath $path; Write-Output '::endgroup::' }
+          }

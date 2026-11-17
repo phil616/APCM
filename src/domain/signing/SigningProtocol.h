@@ -16,7 +16,9 @@ bool isUuid(const QString &text);
 bool validToken(const QByteArray &token);
 bool validReason(int reason);
 Result<QByteArray> readFile(const QUrl &url, qsizetype limit);
+Result<QByteArray> canonicalCsrPem(const QByteArray &pem);
 Result<QVariantMap> inspectCsr(const QByteArray &pem);
+Result<QByteArray> issueRequestBody(const QByteArray &csr, int validitySeconds);
 Result<QVariantMap> inspectCertificate(const QJsonObject &record, const QByteArray &csr,
                                       const QStringList &expectedEkus, const QByteArray &trustedRoots);
 Result<QVariantMap> inspectIssuer(const QByteArray &der);

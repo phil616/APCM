@@ -1,4 +1,5 @@
 #include "SigningProtocol.h"
+#include "../enrollment/EnrollmentRequest.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -75,9 +76,10 @@ QByteArray certDer(X509 *cert)
 }
 QString asnText(const ASN1_STRING *value)
 {
-    const auto *data = ASN1_STRING_get0_data(value);
-    const auto size = ASN1_STRING_length(value);
-    return QString::fromUtf8(reinterpret_cast<const char *>(data), size);
+    unsigned char *utf8 = nullptr;
+    const int size = ASN1_STRING_to_UTF8(&utf8, value);
+    const auto cleanup = qScopeGuard([&] { OPENSSL_free(utf8); });
+    return size >= 0 ? QString::fromUtf8(reinterpret_cast<const char *>(utf8), size) : QString{};
 }
 Result<QVariantMap> names(GENERAL_NAMES *values)
 {
@@ -207,6 +209,27 @@ Result<QByteArray> readFile(const QUrl &url, const qsizetype limit)
         return tl::unexpected(invalid(QStringLiteral("读取文件失败或文件过大。")));
     return data;
 }
+Result<QByteArray> canonicalCsrPem(const QByteArray &pem)
+{
+    if (pem.size() > 65536 || (!onlyPem(pem, "CERTIFICATE REQUEST", 1) && !onlyPem(pem, "NEW CERTIFICATE REQUEST", 1)))
+        return tl::unexpected(invalid(QStringLiteral("请提供单个 PKCS#10 CSR，不能包含私钥、证书或多份申请，大小不得超过 64 KiB。")));
+    auto input = bio(pem);
+    char *type = nullptr, *headers = nullptr;
+    unsigned char *data = nullptr;
+    long size = 0;
+    const auto cleanup = qScopeGuard([&] { OPENSSL_free(type); OPENSSL_free(headers); OPENSSL_free(data); });
+    if (PEM_read_bio(input.get(), &type, &headers, &data, &size) != 1 || !type || !headers || *headers != '\0' ||
+        (QByteArray(type) != "CERTIFICATE REQUEST" && QByteArray(type) != "NEW CERTIFICATE REQUEST"))
+        return tl::unexpected(invalid(QStringLiteral("无法解析 PKCS#10 CSR，或 PEM 包含不支持的元数据头。")));
+    const auto *cursor = data;
+    Handle<X509_REQ, X509_REQ_free> request(d2i_X509_REQ(nullptr, &cursor, size), X509_REQ_free);
+    if (!request || cursor != data + size) return tl::unexpected(invalid(QStringLiteral("CSR DER 编码无效，或包含多余数据。")));
+    // Rewrap the original DER bytes. Never edit Subject/SAN/extensions or re-sign imported requests.
+    const auto encoded = domain::encodeCsrPem(QByteArray(reinterpret_cast<const char *>(data), static_cast<qsizetype>(size)));
+    if (encoded.size() > 65536) return tl::unexpected(invalid(QStringLiteral("标准 PEM 编码后的 CSR 超过 64 KiB。")));
+    return encoded;
+}
+
 Result<QVariantMap> inspectCsr(const QByteArray &pem)
 {
     if (pem.size() > 65536 || !onlyPem(pem, "CERTIFICATE REQUEST", 1))
@@ -287,6 +310,15 @@ Result<QVariantMap> inspectCsr(const QByteArray &pem)
     result->insert(QStringLiteral("subject"), nameText(subject));
     result->insert(QStringLiteral("algorithm"), algorithm);
     return result;
+}
+
+Result<QByteArray> issueRequestBody(const QByteArray &csr, const int validitySeconds)
+{
+    if (validitySeconds != 0 && (validitySeconds < 60 || validitySeconds > 34300800))
+        return tl::unexpected(invalid(QStringLiteral("有效期为 0（服务器默认）或 60～34300800 秒。")));
+    if (auto checked = inspectCsr(csr); !checked) return tl::unexpected(checked.error());
+    return QJsonDocument(QJsonObject{{QStringLiteral("csr_pem"), QString::fromUtf8(csr)},
+        {QStringLiteral("validity_seconds"), validitySeconds}}).toJson(QJsonDocument::Compact);
 }
 
 Result<QVariantMap> inspectCertificate(const QJsonObject &record, const QByteArray &csrPem,

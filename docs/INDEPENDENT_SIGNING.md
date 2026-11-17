@@ -13,6 +13,14 @@
 7. 点击“保存并签发”。先保存原始 JSON 字节、幂等键、端点和原 Token 摘要，再发送请求。签发后分别显示证书状态、业务链信任和本地私钥关联情况。
 8. 证书验证通过后可显式安装到 Windows 个人存储，也可导出叶 PEM 或完整链 PEM。完整链包含叶证书和上级 CA。新生成的业务私钥保留在 CNG，不提供私钥文件导出；无本地私钥的外部 CSR 结果可导出给原私钥持有者。
 
+## CSR 与 HTTP 签发接口
+
+已对照 `phil616/altasci-public-pki` 的 `single` 分支、提交 `53b528d1e7d7f3cb6824eb4bb2d315dec63589c1`，检查实际路由、JSON 解码、CSR 校验和证书签发代码。`POST /signing/{id}/issue` 接收的 JSON 只有 `csr_pem` 和 `validity_seconds`；服务端不替客户端生成业务私钥。
+
+“本地生成 CSR 后签发”先在 Windows CNG 创建私钥，再用独立签发专用配置生成 PKCS#10：关闭 CertEnroll 默认扩展，清空初始化扩展后只添加 SAN。KU/EKU 由服务端策略决定。CSR 统一输出标准 `CERTIFICATE REQUEST` PEM，避免 Windows 的 `NEW CERTIFICATE REQUEST` 包装被服务端拒绝。Subject 按 ASN.1 字符串类型解码，支持 Windows 生成的中文 BMPString。
+
+导入 CSR 时，允许将 Windows 的旧 PEM 包装规范化为标准包装，保留原始 DER、签名、Subject 和扩展；不会删除外部 CSR 中不被服务端支持的扩展。已保存任务的精确请求字节和幂等键不做修改；新规则仅用于新建任务。旧任务仍按原请求恢复。
+
 ## 几种凭据各自的用途
 
 | 配置项 | 用途 | 保存方式 |
@@ -62,6 +70,14 @@
 
 新增 `certmgr_signing_tests` 覆盖 URL/Token、CSR、证书字段和密钥配对、业务信任边界、PFX/PEM 通信身份、真实 TLS/mTLS、nginx 缺证书提示、重定向、报文原样重试、Cookie/CSRF 隔离、限速及 CRL 作用域。
 
-新增 `certmgr_signing_vault_tests` 覆盖精确字节恢复、吊销原因持久化、数据库加密、锁定访问和 v1/v2 保险库迁移。`CERTMGR_TEST_ENROLLMENT=1` 还会启用 Windows CNG 的 ECDSA SAN-only CSR 检查。
+新增 `certmgr_signing_vault_tests` 覆盖精确字节恢复、吊销原因持久化、数据库加密、锁定访问和 v1/v2 保险库迁移。
+
+`certmgr_independent_enrollment_tests` 必须在 Windows 上实际创建临时 CNG 密钥，覆盖 ECDSA P-256/P-384、RSA 2048/3072/4096、中文 Subject 和 DNS/IP/email/URI SAN；测试结束删除密钥。此套测试不依赖可跳过的环境开关。设置 `APCM_CSR_FIXTURE_DIR` 可输出公开 CSR 和原始请求 JSON，供以下命令验证：
+
+```powershell
+.\scripts\verify-independent-csr.ps1 -FixtureDirectory $env:APCM_CSR_FIXTURE_DIR
+```
+
+脚本获取上述固定提交，将适配测试加入临时检出目录，直接调用服务端原有 HTTP JSON 解码器、CSR 解析器、策略校验器及临时 CA 签发器。`.github/workflows/validate-signing.yml` 在 Windows 构建和 CTest 后运行这项互操作检查。它不启动 PostgreSQL，不覆盖远程身份认证或生产部署联调。
 
 自动化测试使用临时 CA、临时端点和临时保险库，不访问生产签发服务。真实部署还需使用部署方提供的端点、通信身份、业务信任根和测试凭据进行端到端联调。

@@ -205,6 +205,7 @@ private slots:
             QSKIP("Set CERTMGR_TEST_ENROLLMENT=1 for real Windows CNG ECDSA CSR generation.");
         certmgr::domain::CertificateTemplate value;
         value.id = QStringLiteral("independent-signing-test");
+        value.csrProfile = certmgr::domain::CsrProfile::IndependentSigning;
         value.scope = certmgr::domain::StoreScope::User;
         value.key.provider = QStringLiteral("Microsoft Software Key Storage Provider");
         value.key.algorithm = QStringLiteral("ECDSA_P256");

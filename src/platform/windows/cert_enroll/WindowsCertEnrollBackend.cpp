@@ -1,4 +1,6 @@
 #include "WindowsCertEnrollBackend.h"
+#include "../../../domain/enrollment/EnrollmentRequest.h"
+#include "../../../domain/signing/SigningProtocol.h"
 
 #include "../common/WinError.h"
 #include "../common/WinRaii.h"
@@ -248,6 +250,11 @@ tl::expected<void, domain::AppError> addSubjectAlternativeNames(
 tl::expected<GeneratedEnrollment, domain::AppError>
 WindowsCertEnrollBackend::createPkcs10(const domain::CertificateTemplate &certificateTemplate)
 {
+    const bool independent = certificateTemplate.csrProfile == domain::CsrProfile::IndependentSigning;
+    if (independent && (!certificateTemplate.keyUsage.isEmpty() || !certificateTemplate.extendedKeyUsage.isEmpty() || !certificateTemplate.upnSans.isEmpty()))
+        return tl::unexpected(domain::AppError{domain::ErrorCategory::Validation,
+            QStringLiteral("enrollment.independent_profile"), 0,
+            QStringLiteral("独立签发 CSR 只允许 DNS/IP/email/URI SAN，不能设置 KU、EKU 或 UPN 请求扩展。"), {}});
     const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(comResult) && comResult != RPC_E_CHANGED_MODE)
         return tl::unexpected(winError(domain::ErrorCategory::Enrollment,
@@ -301,6 +308,16 @@ WindowsCertEnrollBackend::createPkcs10(const domain::CertificateTemplate &certif
                             QStringLiteral("enrollment.request_initialize"),
                             QStringLiteral("无法初始化 PKCS#10 申请。")); !result) return tl::unexpected(result.error());
 
+    if (independent) {
+        if (auto result = check(request->put_SuppressDefaults(VARIANT_TRUE), QStringLiteral("enrollment.suppress_defaults"),
+                QStringLiteral("无法关闭 Windows 默认 CSR 扩展。")); !result) return tl::unexpected(result.error());
+        ComPtr<IX509Extensions> extensions;
+        if (auto result = check(request->get_X509Extensions(&extensions), QStringLiteral("enrollment.default_extensions"),
+                QStringLiteral("无法读取 Windows 默认 CSR 扩展。")); !result) return tl::unexpected(result.error());
+        if (auto result = check(extensions->Clear(), QStringLiteral("enrollment.clear_extensions"),
+                QStringLiteral("无法清除 Windows 默认 CSR 扩展。")); !result) return tl::unexpected(result.error());
+    }
+
     auto hashAlgorithm = createCom<IObjectId>(__uuidof(CObjectId), QStringLiteral("enrollment.hash"));
     if (!hashAlgorithm) return tl::unexpected(hashAlgorithm.error());
     BStr hashName(QStringLiteral("SHA256"));
@@ -343,13 +360,17 @@ WindowsCertEnrollBackend::createPkcs10(const domain::CertificateTemplate &certif
     }
 
     BStr csr;
-    if (auto result = check(enrollment->CreateRequest(XCN_CRYPT_STRING_BASE64REQUESTHEADER, csr.put()),
+    if (auto result = check(enrollment->CreateRequest(XCN_CRYPT_STRING_BASE64, csr.put()),
                             QStringLiteral("enrollment.csr_create"),
                             QStringLiteral("Windows 无法创建 PKCS#10 申请。")); !result) return tl::unexpected(result.error());
     BStr container;
     key->get_ContainerName(container.put());
-    const QString csrText = csr.toQString();
-    const QByteArray csrDer = decodedBase64(csrText);
+    const QByteArray csrDer = decodedBase64(csr.toQString());
+    const QString csrText = QString::fromLatin1(domain::encodeCsrPem(csrDer));
+    if (independent) {
+        auto checked = domain::signing::inspectCsr(csrText.toUtf8());
+        if (!checked) return tl::unexpected(checked.error());
+    }
     ComPtr<IX509PublicKey> publicKey;
     if (auto result = check(request->get_PublicKey(&publicKey), QStringLiteral("enrollment.public_key"),
                             QStringLiteral("无法读取证书申请公钥。")); !result)

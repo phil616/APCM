@@ -113,7 +113,12 @@ if(BUILD_TESTING)
     qt_add_executable(certmgr_signing_vault_tests tests/TestSigningVault.cpp)
     target_link_libraries(certmgr_signing_vault_tests PRIVATE certmgr_core Qt6::Test unofficial-sodium::sodium sqlcipher::sqlcipher)
     add_test(NAME certmgr_signing_vault_tests COMMAND certmgr_signing_vault_tests)
-    set_tests_properties(certmgr_core_tests certmgr_signing_tests certmgr_signing_vault_tests PROPERTIES
+    qt_add_executable(certmgr_independent_enrollment_tests tests/TestIndependentEnrollment.cpp)
+    target_link_libraries(certmgr_independent_enrollment_tests PRIVATE certmgr_core Qt6::Test)
+    target_compile_definitions(certmgr_independent_enrollment_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME certmgr_independent_enrollment_tests COMMAND certmgr_independent_enrollment_tests
+        -o -,txt -o independent-enrollment-tests.xml,junitxml)
+    set_tests_properties(certmgr_core_tests certmgr_signing_tests certmgr_signing_vault_tests certmgr_independent_enrollment_tests PROPERTIES
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${Qt6_DIR}/../../../bin"
     )
 endif()

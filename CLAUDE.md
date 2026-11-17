@@ -23,12 +23,12 @@ cmake --build --preset windows-msvc-debug
 ctest --preset windows-msvc-debug
 ```
 
-Test targets are `certmgr_tests` (`certmgr_core_tests`), `certmgr_signing_tests`, and `certmgr_signing_vault_tests`. Run a single QtTest slot by name (slots in `tests/TestCore.cpp`):
+Test targets are `certmgr_tests` (`certmgr_core_tests`), `certmgr_signing_tests`, `certmgr_signing_vault_tests`, and `certmgr_independent_enrollment_tests`. Run a single QtTest slot by name (slots in `tests/TestCore.cpp`):
 ```powershell
 .\build\debug\certmgr_tests.exe deviceTemplateEnforcesTpmInvariant
 ```
 
-Tests that touch real OS state are opt-in via environment variables and otherwise `QSKIP`:
+The independent-enrollment suite always creates and cleans up temporary user CNG keys for all five supported algorithms. Set `APCM_CSR_FIXTURE_DIR` to export its public CSR/wire JSON fixtures, then run `scripts/verify-independent-csr.ps1` against the pinned upstream parser/issuer. Other tests that touch real OS state are opt-in via environment variables and otherwise `QSKIP`:
 - `CERTMGR_TEST_ENROLLMENT=1` — real CNG PKCS#10 + response association.
 - `CERTMGR_TEST_TPM=1` — force the TPM provider in the enrollment test.
 - `CERTMGR_TEST_P12` / `CERTMGR_TEST_P12_PASSWORD` — external P12 fixture inspection.

@@ -8,6 +8,8 @@
 
 namespace certmgr::domain {
 
+enum class CsrProfile { Standard, IndependentSigning };
+
 enum class FieldSource { Fixed, UserInput, ComputerName, Username, Environment, Generated, ServerAssigned };
 
 struct TemplateField {
@@ -32,6 +34,7 @@ struct CertificateTemplate {
     int version{1};
     bool enabled{true};
     StoreScope scope{StoreScope::User};
+    CsrProfile csrProfile{CsrProfile::Standard};
     QHash<QString, TemplateField> subject;
     QStringList dnsSans;
     QStringList ipSans;

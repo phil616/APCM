@@ -182,6 +182,44 @@ private slots:
         QVERIFY(validToken(token)); QVERIFY(!validToken(token + "\n"));
         QVERIFY(validReason(0)); QVERIFY(validReason(10)); QVERIFY(!validReason(7)); QVERIFY(!validReason(8));
     }
+    void canonicalPemPreservesSignedRequestAndNormalizesWindowsEnvelope() {
+        QByteArray legacy = csr;
+        legacy.replace("BEGIN CERTIFICATE REQUEST", "BEGIN NEW CERTIFICATE REQUEST");
+        legacy.replace("END CERTIFICATE REQUEST", "END NEW CERTIFICATE REQUEST");
+        legacy.replace("\n", "\r\n");
+        QVERIFY(!inspectCsr(legacy)); // The wire protocol remains strict.
+        auto canonical = canonicalCsrPem(legacy);
+        QVERIFY(canonical); QCOMPARE(*canonical, csr); QVERIFY(inspectCsr(*canonical));
+        auto again = canonicalCsrPem(*canonical); QVERIFY(again); QCOMPARE(*again, *canonical);
+        QVERIFY(!canonicalCsrPem(csr + csr));
+        QVERIFY(!canonicalCsrPem(csr + pemKey(leafKey.get())));
+        QVERIFY(!canonicalCsrPem("unexpected preamble\n" + csr));
+        QByteArray metadata = csr;
+        metadata.replace("-----BEGIN CERTIFICATE REQUEST-----\n", "-----BEGIN CERTIFICATE REQUEST-----\nComment: rejected\n\n");
+        QVERIFY(!canonicalCsrPem(metadata));
+        auto withKu = canonicalCsrPem(makeCsr(leafKey.get(), "DNS:localhost", "localhost", true));
+        QVERIFY(withKu); QVERIFY(!inspectCsr(*withKu)); // Formatting never silently strips extensions.
+    }
+    void windowsBmpSubjectStringsAreDecodedCorrectly() {
+        Bio input(BIO_new_mem_buf(csr.constData(), static_cast<int>(csr.size())), BIO_free);
+        Request request(PEM_read_bio_X509_REQ(input.get(), nullptr, nullptr, nullptr), X509_REQ_free);
+        QVERIFY(request);
+        const QByteArray chinese = QByteArray::fromHex("4e2d6587");
+        QVERIFY(X509_NAME_add_entry_by_NID(X509_REQ_get_subject_name(request.get()), NID_organizationName, V_ASN1_BMPSTRING,
+            reinterpret_cast<const unsigned char *>(chinese.constData()), chinese.size(), -1, 0));
+        QVERIFY(X509_REQ_sign(request.get(), leafKey.get(), EVP_sha256()));
+        Bio output(BIO_new(BIO_s_mem()), BIO_free); QVERIFY(PEM_write_bio_X509_REQ(output.get(), request.get()));
+        auto checked = inspectCsr(bioBytes(output.get())); QVERIFY(checked);
+        QCOMPARE(checked->value(QStringLiteral("O")).toString(), QStringLiteral("中文"));
+    }
+    void issueBodyContainsOnlyPublicCsrAndValidity() {
+        auto body = issueRequestBody(csr, 3600); QVERIFY(body);
+        const auto json = QJsonDocument::fromJson(*body).object();
+        QCOMPARE(json.size(), 2); QCOMPARE(json.value(QStringLiteral("csr_pem")).toString().toUtf8(), csr);
+        QCOMPARE(json.value(QStringLiteral("validity_seconds")).toInt(), 3600);
+        QVERIFY(!body->contains("PRIVATE KEY"));
+        QVERIFY(!issueRequestBody(csr, 59)); QVERIFY(!issueRequestBody(csr, 34300801));
+    }
     void csrRejectsExtraExtensionsAndMissingSan() {
         QVERIFY(inspectCsr(csr));
         QVERIFY(!inspectCsr(makeCsr(leafKey.get(), "DNS:localhost", "localhost", true)));

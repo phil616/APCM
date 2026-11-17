@@ -337,6 +337,7 @@ QString IndependentSigningController::prepareIssue(const QVariantMap &options)
     if (csr.isEmpty()) {
         domain::CertificateTemplate request;
         request.id = QStringLiteral("altasci-independent-san-only");
+        request.csrProfile = domain::CsrProfile::IndependentSigning;
         request.name = name; request.friendlyName = name; request.scope = domain::StoreScope::User;
         request.key.provider = QStringLiteral("Microsoft Software Key Storage Provider");
         const QString algorithm = options.value(QStringLiteral("algorithm"), QStringLiteral("ECDSA_P256")).toString();
@@ -369,6 +370,9 @@ QString IndependentSigningController::prepareIssue(const QVariantMap &options)
         if (auto saved = vault_.saveEnrollmentRequest(enrollmentRecord); !saved) { fail(saved.error().message); return {}; }
         emit enrollmentChanged();
     }
+    auto canonical = canonicalCsrPem(csr);
+    if (!canonical) { fail(canonical.error().message); return {}; }
+    csr = *canonical;
     auto csrInfo = inspectCsr(csr);
     if (!csrInfo) { fail(csrInfo.error().message); return {}; }
     // A CSR imported from outside the app may optionally be paired with an existing CNG key.
@@ -385,8 +389,9 @@ QString IndependentSigningController::prepareIssue(const QVariantMap &options)
         if (auto saved = vault_.saveEnrollmentRequest(enrollmentRecord); !saved) { fail(saved.error().message); return {}; }
         emit enrollmentChanged();
     }
-    const QByteArray body = QJsonDocument(QJsonObject{{QStringLiteral("csr_pem"), QString::fromUtf8(csr)},
-        {QStringLiteral("validity_seconds"), validity}}).toJson(QJsonDocument::Compact);
+    auto preparedBody = issueRequestBody(csr, validity);
+    if (!preparedBody) { fail(preparedBody.error().message); return {}; }
+    const QByteArray body = *preparedBody;
     const QString id = uuid();
     operation[QStringLiteral("id")] = id;
     operation[QStringLiteral("profileId")] = selectedProfileId_;

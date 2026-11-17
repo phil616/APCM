@@ -450,7 +450,7 @@ Item {
                     Layout.fillWidth: true
                     Caption { text: "证书名称" }
                     TextField { id: issueName; Layout.fillWidth: true; font.pixelSize: 11 }
-                    ComboBox { id: issueMode; model: ["新建密钥与 CSR", "导入外部 CSR", "使用本地申请"]; font.pixelSize: 11 }
+                    ComboBox { id: issueMode; model: ["本地生成 CSR 后签发", "导入外部 CSR", "使用本地申请"]; font.pixelSize: 11 }
                 }
                 ColumnLayout {
                     Layout.fillWidth: true; visible: issueMode.currentIndex === 0
@@ -463,7 +463,7 @@ Item {
                         Caption { text: "O" } TextField { id: subjectOrg; Layout.fillWidth: true; placeholderText: "组织"; font.pixelSize: 11 }
                         Caption { text: "OU" } TextField { id: subjectOu; Layout.fillWidth: true; placeholderText: "部门"; font.pixelSize: 11 }
                     }
-                    Note { text: "SAN 至少填写一项；多项用换行或逗号分隔。不会自动修改 CN，CSR 仅添加 SAN 扩展。" }
+                    Note { text: "服务端只接收 CSR。本机会先创建 CNG 私钥及标准 PKCS#10，再提交 CSR；SAN 至少填写一项，CN 不会自动改写。" }
                     GridLayout {
                         Layout.fillWidth: true; columns: 2; columnSpacing: 10; rowSpacing: 5
                         Caption { text: "DNS SAN" } Caption { text: "IP SAN" }

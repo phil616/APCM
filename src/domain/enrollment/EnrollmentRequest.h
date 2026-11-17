@@ -45,5 +45,6 @@ struct EnrollmentRequest {
 };
 
 QString enrollmentStateName(EnrollmentState state);
+QByteArray encodeCsrPem(const QByteArray &der);
 
 } // namespace certmgr::domain
